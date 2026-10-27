@@ -19,9 +19,15 @@ User rules (added 2026-10-27):
 
 - Boot, title screen click, ready phase, throw (charge/release), strike detection, sweep animation, respot, scorecard X/pending scores, message overlays.
 
-## Pending QA (needs user permission to run)
+## Pending QA — user is testing manually
 
-- Gutter ball path, spare + partial-rack second ball, spin/hook behavior, 10th-frame bonus balls, game-over screen + restart, mobile (375px) layout, sound on.
+User chose to test the game themselves (2026-10-27) rather than have automated browser QA run. Expect feedback on: gutter balls, spares/partial racks, spin/hook feel, 10th-frame bonus balls, game-over screen, sound, and mobile layout. Fix list from QA pass 1 is already applied.
+
+## Deployment
+
+- Repo made public + GitHub Pages enabled from main branch (root).
+- Live site: https://fish01-jpg.github.io/resort-bowling/
+- CDN deps (esm.sh Three.js/Rapier, Fontshare) work on Pages.
 
 ## Tuning knobs (src/constants.js TUNING)
 
