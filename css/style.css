@@ -565,3 +565,164 @@ kbd {
   background: rgba(255, 255, 255, 0.07); border-radius: 8px; padding: 6px 14px; min-width: 240px;
 }
 #final-standings .fs-row.winner { color: #ffdf7e; font-weight: 700; }
+
+/* ============ Phone controller page (phone.html) ============ */
+
+.phone-body {
+  margin: 0;
+  background: radial-gradient(120% 120% at 50% 0%, #0a3d5c 0%, #062739 55%, #041824 100%);
+  color: #eaf4f8;
+  font-family: 'General Sans', system-ui, sans-serif;
+  min-height: 100dvh;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.phone-wrap {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: env(safe-area-inset-top) 18px env(safe-area-inset-bottom);
+  box-sizing: border-box;
+}
+
+.phone-screen {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+.phone-screen.active { display: flex; }
+
+.phone-title {
+  font-family: 'Chillax', system-ui, sans-serif;
+  font-size: 30px;
+  letter-spacing: 3px;
+  margin: 0;
+  color: #fff;
+}
+.phone-title::after {
+  content: "";
+  display: block;
+  width: 54px; height: 4px; margin: 8px auto 0;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #f7b267, #e76f51);
+}
+.phone-sub { margin: 0; color: #9fc3d8; font-size: 15px; }
+
+.phone-label { color: #9fc3d8; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; }
+
+.phone-input {
+  width: 180px;
+  padding: 14px;
+  font-size: 26px;
+  letter-spacing: 8px;
+  text-align: center;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 12px;
+  color: #fff;
+  outline: none;
+}
+.phone-input:focus { border-color: #f7b267; }
+
+.phone-btn {
+  min-width: 200px;
+  padding: 14px 22px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: #062739;
+  background: linear-gradient(180deg, #ffd9a0, #f7b267);
+  border: none;
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(247, 178, 103, 0.35);
+}
+.phone-btn:active { transform: translateY(2px); }
+.phone-btn.small { min-width: 140px; padding: 10px 14px; font-size: 13px; }
+.phone-btn.throw {
+  background: linear-gradient(180deg, #ff9d7a, #e76f51);
+  box-shadow: 0 6px 18px rgba(231, 111, 81, 0.4);
+}
+.phone-btn:disabled { opacity: 0.45; }
+
+.phone-err { color: #ff9d8a; font-size: 13px; min-height: 18px; margin: 0; }
+
+.phone-top {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: #9fc3d8;
+  width: 100%; justify-content: center;
+}
+.dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #888; display: inline-block;
+}
+.dot.ok { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+.dot.warn { background: #f7b267; box-shadow: 0 0 8px #f7b267; }
+.dot.err { background: #ef5d43; box-shadow: 0 0 8px #ef5d43; }
+.lat { color: #9fc3d8; }
+
+.tilt-stage {
+  position: relative;
+  width: min(78vw, 300px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+.tilt-bg {
+  position: absolute; inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(247, 178, 103, 0.25), transparent 65%);
+  opacity: 0; transition: opacity 0.15s;
+}
+.tilt-ring {
+  position: absolute; inset: 18%;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+}
+.tilt-dot {
+  position: absolute; left: 50%; top: 50%;
+  width: 56px; height: 56px;
+  margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffd9a0, #e76f51);
+  box-shadow: 0 4px 16px rgba(231, 111, 81, 0.5);
+  will-change: transform;
+}
+.tilt-label {
+  position: absolute; left: 0; right: 0; bottom: 14%;
+  font-size: 11px; letter-spacing: 3px; color: #9fc3d8;
+}
+
+.swing-hint {
+  margin: 0; font-size: 16px; color: #cfe6f2;
+  min-height: 22px;
+  transition: color 0.15s;
+}
+.swing-hint.armed { color: #f7b267; }
+
+.phone-bottom {
+  display: flex; gap: 12px; margin-top: 6px;
+}
+
+/* desktop menu: phone pairing bits */
+#menu-phone #phone-code {
+  font-size: 34px; letter-spacing: 10px; font-weight: 700;
+  color: #f7b267;
+}
+#phone-qr {
+  border-radius: 10px;
+  background: #fff;
+  padding: 6px;
+}
+#phone-qr.hidden { display: none; }
+.small-note { font-size: 12px !important; color: #7fa5bb !important; }
+.menu-btn.phone-accent {
+  background: linear-gradient(180deg, #4cc9f0, #4aa8d8);
+  box-shadow: 0 6px 18px rgba(76, 201, 240, 0.3);
+}

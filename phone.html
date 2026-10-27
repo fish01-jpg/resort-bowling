@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Sunset Lanes — Phone Controller</title>
+<link rel="stylesheet" href="css/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='44' fill='%23002e4d'/><circle cx='50' cy='50' r='26' fill='none' stroke='%23f7b267' stroke-width='10'/></svg>" />
+<meta name="theme-color" content="#002e4d" />
+</head>
+<body class="phone-body">
+<div class="phone-wrap">
+
+  <!-- 1. pairing -->
+  <section id="pair-screen" class="phone-screen active">
+    <h1 class="phone-title">SUNSET LANES</h1>
+    <p class="phone-sub">Phone Controller</p>
+    <label class="phone-label" for="pair-code">Enter the code shown in the game</label>
+    <input id="pair-code" class="phone-input" inputmode="text" autocomplete="off"
+           spellcheck="false" maxlength="4" placeholder="CODE" />
+    <button id="pair-btn" class="phone-btn">CONNECT</button>
+    <p id="pair-err" class="phone-err"></p>
+  </section>
+
+  <!-- 2. iOS motion permission -->
+  <section id="motion-screen" class="phone-screen">
+    <h1 class="phone-title">MOTION ACCESS</h1>
+    <p class="phone-sub">The controller needs your gyroscope (like a Wii remote).</p>
+    <button id="enable-motion" class="phone-btn">ENABLE MOTION</button>
+    <p class="phone-err" id="motion-err"></p>
+  </section>
+
+  <!-- 3. controller -->
+  <section id="ctl-screen" class="phone-screen">
+    <header class="phone-top">
+      <span id="status-dot" class="dot warn"></span>
+      <span id="status-text">Connecting…</span>
+      <span id="latency" class="lat"></span>
+    </header>
+
+    <div class="tilt-stage">
+      <div class="tilt-bg" id="tilt-fill"></div>
+      <div class="tilt-ring"></div>
+      <div class="tilt-dot" id="tilt-indicator"></div>
+      <span class="tilt-label">TILT TO AIM</span>
+    </div>
+
+    <p id="swing-hint" class="swing-hint">Aim with tilt — SWING to throw</p>
+
+    <button id="throw-btn" class="phone-btn throw hidden">THROW</button>
+
+    <footer class="phone-bottom">
+      <button id="cal-btn" class="phone-btn small">RECENTER</button>
+      <button id="mode-btn" class="phone-btn small">MODE: SWING</button>
+    </footer>
+  </section>
+
+</div>
+<script type="module" src="src/phone-main.js"></script>
+</body>
+</html>

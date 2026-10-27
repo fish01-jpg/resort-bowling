@@ -58,6 +58,16 @@ src/main.js         — bootstrap, game loop, camera, automation hooks
 tests/scoring.test.mjs — rules engine tests
 ```
 
+## Phone controller (Wii-style)
+
+Open the game on your computer, pick **USE PHONE AS CONTROLLER**, then scan
+the QR (or open the same site on your phone and enter the 4-letter code).
+Tilt the phone to steer and swing it forward to throw; RECENTER sets neutral,
+MODE switches between swing-throw (default) and button-throw. The phone page
+is served at `phone.html`; small touch devices are redirected there
+automatically (`?desktop=1` overrides). Pairing uses Firestore only for
+WebRTC signaling — all controller traffic runs over a peer data channel.
+
 ## Roadmap
 
 - Touch controls, gamepad support, motion (device-orientation) controls

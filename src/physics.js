@@ -11,6 +11,7 @@ export class Physics {
     this.ballBody = null;
     this.pinBodies = []; // indexed by pin id 0..9
     this.activeSpin = 0;
+    this.lastLaunch = null;
     this.eventQueue = new RAPIER.EventQueue(true);
     this._pinHandles = new Map(); // collider handle -> pin index
     this._buildStatics();
@@ -127,6 +128,16 @@ export class Physics {
 
   throwBall({ position = 0, aim = 0, power = 0.7, spin = 0 }) {
     const speed = TUNING.minSpeed + power * (TUNING.maxSpeed - TUNING.minSpeed);
+    // High-speed scatter: one bounded, speed-scaled release perturbation.
+    // Seeded per throw; the ACTUAL (post-scatter) launch is kept in
+    // lastLaunch so online replays reproduce the real trajectory.
+    if (speed > TUNING.wobbleSpeed) {
+      const k = Math.min(1, (speed - TUNING.wobbleSpeed) / (TUNING.maxSpeed - TUNING.wobbleSpeed));
+      position += (Math.random() * 2 - 1) * TUNING.wobbleMaxPos * k;
+      aim += (Math.random() * 2 - 1) * TUNING.wobbleMaxAim * k;
+      spin = Math.max(-1, Math.min(1, spin + (Math.random() * 2 - 1) * TUNING.wobbleMaxSpin * k));
+    }
+    this.lastLaunch = { position, aim, power, spin };
     this.ballBody.setTranslation({ x: position, y: LANE.ballRadius, z: -1.8 }, true);
     this.ballBody.setLinvel({ x: Math.sin(aim) * speed, y: 0, z: Math.cos(aim) * speed }, true);
     // forward roll: rotation about +x for motion along +z

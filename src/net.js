@@ -54,6 +54,11 @@ export class RoomClient {
     this.onReplayDone = onReplayDone || (() => {});
   }
 
+  /** Revision of the last snapshot (used to reject stale/duplicate submits). */
+  get revision() {
+    return this.room ? (this.room.revision || 0) : -1;
+  }
+
   get myTurn() {
     return !!(this.room && this.room.status === 'playing' &&
       this.room.turn && this.room.turn.uid === this.uid);
@@ -184,7 +189,7 @@ export class RoomClient {
    * authority: it verifies it is our turn, applies the roll, derives the next
    * turn/rack, and bumps the revision atomically.
    */
-  async submitRoll({ params, knocked, standingAfter }) {
+  async submitRoll({ params, knocked, standingAfter, expectedRevision }) {
     const ref = doc(this.db, COLLECTION, this.code);
     try {
       await runTransaction(this.db, async (tx) => {
@@ -192,6 +197,9 @@ export class RoomClient {
         const room = snap.data();
         if (!room || room.status !== 'playing') throw new Error('Match is not active');
         if (!room.turn || room.turn.uid !== this.uid) throw new Error('Not your turn');
+        if (expectedRevision != null && (room.revision || 0) !== expectedRevision) {
+          throw new Error('Stale turn — already submitted');
+        }
         const baseRevision = room.revision || 0;
         const next = applyRollToRoom(room, this.uid, knocked, standingAfter);
         tx.update(ref, {
@@ -206,6 +214,7 @@ export class RoomClient {
       });
     } catch (e) {
       this.onError('Roll not saved — ' + e.message);
+      throw e; // let the caller recover (e.g. re-enable input)
     }
   }
 

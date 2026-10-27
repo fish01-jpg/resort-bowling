@@ -77,6 +77,16 @@ export class Input {
     }
   }
 
+  /** Neutral controls for the next delivery — players can't repeat a throw. */
+  resetControls() {
+    this.controls.position = 0;
+    this.controls.aim = 0;
+    this.controls.spin = 0;
+    this.controls.power = 0;
+    this.charging = false;
+    this.chargeT = 0;
+  }
+
   /** Direct programmatic control (used by BowlingAPI / future controllers). */
   setControls(partial) {
     Object.assign(this.controls, partial);

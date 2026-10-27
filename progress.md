@@ -141,3 +141,52 @@ Tests (all headless, no browser):
   full 24-roll match to completion + winner, play-again to lobby, rejoin by
   name, leave/delete cleanup.
 - physics 11/11, scoring 32/32 — no regressions.
+
+## Session 4 — control reset, phone gyro controller, ball/pin interaction
+
+- Control reset after every throw: `_prepareNextDelivery()` neutralizes
+  position/aim/spin/power on every path back to aiming (solo continuation,
+  hot-seat handover, online turn adoption, restart) — no repeat-throwing the
+  same setup. Remote replay completion intentionally skips it.
+- Phone-as-controller (Wii-remote style), new files:
+  - `src/rtc.js`: WebRTC transport. Firestore (`bowlingControllers` collection)
+    is used ONLY for signaling (offer/answer); all gameplay traffic goes over
+    two host-created data channels — `state` (unreliable, 30Hz orientation
+    samples, stale packets dropped by seq) and `ctl` (reliable: throws with
+    dedup ids, calibration, phase, ping/pong RTT). Non-trickle ICE with a
+    bounded 4s gather. Pairing doc id is a high-entropy token (QR contains the
+    token, not the 4-char code); first controller wins the claim
+    transaction; sessions expire after 1h; host deletes the doc on close.
+  - `phone.html` + `src/phone-main.js`: lightweight controller page (no
+    Three/Rapier). Pair by QR (?pair=TOKEN) or 4-char code; iOS motion
+    permission screen; controller UI with connection status, tilt indicator,
+    RECENTER (recalibrate), MODE toggle (SWING default / BUTTON), THROW
+    button. Quaternion-based calibrated relative orientation (W3C ZXY Euler),
+    roll -> ball position, yaw -> aim; screen-rotation robust. Swing state
+    machine on devicemotion (idle -> swinging -> release, 700ms cooldown);
+    power from peak acceleration, spin from wrist twist during the swing.
+    Portrait lock best-effort.
+  - Desktop menu: "USE PHONE AS CONTROLLER" -> pairing screen (QR + code).
+    Tilt steers only while aiming; after a throw it re-arms when the phone
+    returns near neutral. Small touch devices are redirected to phone.html
+    (?desktop=1 overrides).
+- Pins affect the ball more: ball mass 7.26 -> 6.0 kg (test: ball loses
+  ~2.9 m/s through the rack on a head-on hit).
+- High-speed scatter: above 8.6 m/s (power ~0.76) the release gets ONE
+  bounded, speed-scaled random perturbation (max ±0.035m position, ±0.009rad
+  aim, ±0.12 spin at full power). The post-scatter launch is stored in
+  `physics.lastLaunch` and used for online replays. Low power stays fully
+  deterministic.
+- Online robustness: `submitRoll` now takes `expectedRevision` and rejects
+  stale same-turn duplicates in the transaction; it also rethrows so callers
+  can recover; the game reports failed submissions and main.js releases the
+  pending-result lock (input no longer freezes until the 90s timeout when a
+  submit fails). Lobby -> playing now always hides the overlay. The
+  pending-result lock only arms on YOUR throws (not remote replays).
+
+Tests (headless, no browser): controls.test.mjs 12/12 (reset after solo +
+hot-seat delivery, low-power determinism, high-power scatter bounded, ball
+mass + energy loss through rack), revision.test.mjs 4/4 (real Firestore:
+stale duplicate rejected, revision unchanged), online 15/15, match 24/24,
+physics 11/11, scoring 32/32 — no regressions. Gyro/WebRTC/latency behavior
+on real devices is left for user testing.

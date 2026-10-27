@@ -9,7 +9,7 @@ export const LANE = {
   deckEndZ: 19.4,         // lane surface + collider end (past the rear pin row at ~19.14)
   pitZ: 19.4,             // pit begins where the deck ends
   ballRadius: 0.1085,
-  ballMass: 7.26,
+  ballMass: 6.0,         // lighter ball: pins knock it around more
   pinHeight: 0.381,
   pinMass: 1.55,
   gutterFloorY: -0.10,
@@ -42,6 +42,12 @@ export const TUNING = {
   settleQuiet: 0.75,      // seconds of continuous pin stillness before scoring
   settleTimeout: 15.0,    // absolute force-settle after this long (pins still moving)
   sweepDuration: 1.1,
+  // High-speed scatter: above wobbleSpeed the release gets one bounded,
+  // speed-scaled random perturbation — full power is powerful but riskier.
+  wobbleSpeed: 8.6,       // m/s where scatter begins (power ~0.76)
+  wobbleMaxPos: 0.035,    // max random position offset at max power (m)
+  wobbleMaxAim: 0.009,    // max random aim offset at max power (rad)
+  wobbleMaxSpin: 0.12,    // max random spin offset at max power
 };
 
 export const COLORS = {

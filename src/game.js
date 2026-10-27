@@ -39,6 +39,7 @@ export class BowlingGame {
     this.rollIndex = 0;
     this.standingBefore = 10;
     this.physics.resetRack(PIN_SPOTS.map(() => true));
+    this._prepareNextDelivery();
     this._resetBall();
     this.phase = 'ready';
     this._syncUI();
@@ -55,6 +56,7 @@ export class BowlingGame {
     this.standingBefore = 10;
     this.physics.resetRack(FULL_RACK.slice());
     this._showAllPins();
+    this._prepareNextDelivery();
     this._resetBall();
     this.phase = 'ready';
     this._syncUI();
@@ -69,9 +71,21 @@ export class BowlingGame {
     this.rollIndex = ball;
     this.physics.resetRack(rack);
     this._showAllPins();
+    this._prepareNextDelivery();
     this._resetBall();
     this.phase = 'ready';
     this._syncUI();
+  }
+
+  /**
+   * Prepare for the next delivery: neutral controls so the player can't just
+   * repeat the previous throw. Called on every path that returns to aiming
+   * (solo continuation, hot-seat handover, online turn adoption, restart).
+   * NOT called on remote replay completion (that would wipe the local
+   * player's pending input while it isn't their turn).
+   */
+  _prepareNextDelivery() {
+    if (this.input.resetControls) this.input.resetControls();
   }
 
   _resetBall() {
@@ -228,7 +242,17 @@ export class BowlingGame {
       // room snapshot drive the next rack/turn. Never record locally.
       const standingAfter = [];
       for (let i = 0; i < 10; i++) standingAfter.push(this.physics.pinState(i).standing);
-      this.net.submitRoll({ params: this._lastThrowParams, knocked, standingAfter });
+      const submitted = this.net.submitRoll({
+        params: this.physics.lastLaunch || this._lastThrowParams,
+        knocked,
+        standingAfter,
+        expectedRevision: this.net.revision,
+      });
+      if (submitted && submitted.catch) {
+        submitted.catch(() => {
+          if (this.onNetSubmitFailed) this.onNetSubmitFailed();
+        });
+      }
     } else if (!this.replay) {
       // record the roll (solo + local hot-seat)
       this.game.rolls.push(knocked);
@@ -276,6 +300,7 @@ export class BowlingGame {
     // online: the room snapshot re-applies rack/turn context after our
     // submission — lock input; the room re-enables it when it's our turn again
     if (this.net) {
+      this._prepareNextDelivery();
       this._resetBall();
       this.phase = 'ready';
       this.input.setEnabled(false);
@@ -346,6 +371,7 @@ export class BowlingGame {
       this._showAllPins();
     }
 
+    this._prepareNextDelivery();
     this._resetBall();
     this.phase = 'ready';
     this._syncUI();
@@ -362,6 +388,7 @@ export class BowlingGame {
     this.standingBefore = 10;
     this.physics.resetRack(FULL_RACK.slice());
     this._showAllPins();
+    this._prepareNextDelivery();
     this._resetBall();
     this.phase = 'ready';
     this._syncUI();

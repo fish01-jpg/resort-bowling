@@ -31,6 +31,10 @@ export class UI {
       menuLocal: document.getElementById('menu-local'),
       menuOnline: document.getElementById('menu-online'),
       menuLobby: document.getElementById('menu-lobby'),
+      menuPhone: document.getElementById('menu-phone'),
+      phoneQr: document.getElementById('phone-qr'),
+      phoneCode: document.getElementById('phone-code'),
+      phoneStatus: document.getElementById('phone-status'),
       localNames: document.getElementById('local-names'),
       onlineName: document.getElementById('online-name'),
       joinCode: document.getElementById('join-code'),
@@ -171,7 +175,7 @@ export class UI {
   /** Show one menu screen: 'main' | 'local' | 'online' | 'lobby' | null (hide all). */
   showMenu(screen) {
     this.el.menuPanel.classList.toggle('hidden', screen == null);
-    for (const [key, id] of [['main', 'menuMain'], ['local', 'menuLocal'], ['online', 'menuOnline'], ['lobby', 'menuLobby']]) {
+    for (const [key, id] of [['main', 'menuMain'], ['local', 'menuLocal'], ['online', 'menuOnline'], ['lobby', 'menuLobby'], ['phone', 'menuPhone']]) {
       this.el[id].classList.toggle('hidden', screen !== key);
     }
     if (screen === 'online') this.el.onlineError.classList.add('hidden');

@@ -8,7 +8,16 @@ import { AudioFX } from './audio.js';
 import { BowlingGame } from './game.js';
 import { Match, playerProgress, buildGames } from './match.js';
 import { RoomClient, TURN_TIMEOUT_MS } from './net.js';
+import { PhoneHost } from './rtc.js';
 import { LANE, TUNING } from './constants.js';
+
+// Phones become controllers, not the game screen: redirect small touch
+// devices to the lightweight controller page.
+const IS_PHONE = typeof matchMedia !== 'undefined' && typeof screen !== 'undefined'
+  && matchMedia('(pointer: coarse)').matches
+  && Math.min(screen.width || 9999, screen.height || 9999) <= 500
+  && !location.search.includes('desktop=1');
+if (IS_PHONE) location.replace('phone.html');
 
 const FIXED_DT = 1 / 60;
 let accumulator = 0;
@@ -46,6 +55,17 @@ async function boot() {
   let lastAppliedRevision = -1;
   let lastReplayedSeq = -1;
   let skipFiredRevision = -1;
+  let prevRoomStatus = null;   // lobby -> playing overlay fix
+  let revisionAtThrow = -1;    // pending-result lock
+
+  // if our online submission fails, release the pending-result lock so the
+  // player isn't frozen until the turn timeout
+  game.onNetSubmitFailed = () => { revisionAtThrow = -1; };
+
+  // phone controller (gyro Wii-style)
+  let phoneHost = null;
+  let phoneNeedsRearm = false;
+  let lastPhonePhaseKey = '';
 
   // camera state
   const camPos = new THREE.Vector3(0, 1.5, -3.2);
@@ -161,6 +181,9 @@ async function boot() {
       backToMenu('Room closed');
       return;
     }
+    const wasLobby = prevRoomStatus === 'lobby';
+    prevRoomStatus = room.status;
+
     if (room.status === 'lobby') {
       ui.showLobby({ ...room, code: net.code }, net.uid);
       input.setEnabled(false);
@@ -184,6 +207,12 @@ async function boot() {
       return;
     }
     // playing — panels update immediately; turn context/replay in onlineTick
+    if (wasLobby && room.status === 'playing') {
+      // the match just started — make sure no menu/lobby overlay lingers
+      ui.hideOverlay();
+      ui.el.finalPanel.classList.remove('show');
+      ui.el.finalStandings.classList.add('hidden');
+    }
     game.net = net;
     game.match = null;
     const games = buildGames(room.players, room.rolls);
@@ -242,8 +271,19 @@ async function boot() {
 
     const myTurn = !!(room.turn && room.turn.uid === net.uid);
     if (myTurn) {
-      if (game.phase === 'ready') {
-        input.setEnabled(true);
+      if (game.phase === 'rolling' || game.phase === 'settling' || game.phase === 'sweep') {
+        // pending-result lock: our throw is in flight — keep input off until
+        // the room records it (revision advances past the throw)
+        input.setEnabled(false);
+        ui.setTurnBanner('Nice roll…', '');
+      } else if (game.phase === 'ready') {
+        const pending = revisionAtThrow >= 0 && room.revision <= revisionAtThrow;
+        if (pending) {
+          input.setEnabled(false); // still waiting for the room to accept it
+        } else {
+          revisionAtThrow = -1;
+          input.setEnabled(true);
+        }
         if (room.revision !== lastAppliedRevision) {
           const games = buildGames(room.players, room.rolls);
           lastAppliedRevision = room.revision;
@@ -281,11 +321,101 @@ async function boot() {
     }
   }
 
+  // ---------------- phone controller ----------------
+
+  const clamp01 = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  /** Phone tilt -> ball position / aim (only while aiming; re-arms at neutral). */
+  function onPhoneState(m) {
+    if (game.phase !== 'ready' || !input.enabled) return;
+    if (phoneNeedsRearm) {
+      if (Math.abs(m.roll) < 0.12 && Math.abs(m.yaw) < 0.15) phoneNeedsRearm = false;
+      else return; // hold the release pose until the phone comes back to neutral
+    }
+    input.controls.position = clamp01(m.roll / 0.35, -1, 1) * TUNING.maxPosition;
+    input.controls.aim = clamp01(m.yaw / 0.45, -1, 1) * TUNING.maxAim;
+  }
+
+  /** Swing release (or THROW button) from the phone. */
+  function onPhoneThrow(m) {
+    if (game.phase !== 'ready' || !input.enabled) return;
+    const power = clamp01(m.power, 0.12, 1);
+    const spin = clamp01(m.spin, -1, 1);
+    game._throw({ position: input.controls.position, aim: input.controls.aim, power, spin });
+    phoneNeedsRearm = true; // tilt steering pauses until back near neutral
+    broadcastPhonePhase();
+  }
+
+  /** Tell the phone whether swinging will throw right now. */
+  function broadcastPhonePhase() {
+    if (!phoneHost || !phoneHost.connected) return;
+    const canThrow = game.phase === 'ready' && input.enabled;
+    const key = `${game.phase}|${canThrow ? 1 : 0}`;
+    if (key === lastPhonePhaseKey) return;
+    lastPhonePhaseKey = key;
+    phoneHost.sendCtl({ t: 'phase', phase: game.phase, canThrow });
+  }
+
+  async function renderPhoneQr(text) {
+    try {
+      const mod = await import('https://esm.sh/qrcode@1.5.4');
+      const QR = mod.default || mod;
+      await QR.toCanvas(ui.el.phoneQr, text, {
+        width: 200, margin: 1,
+        color: { dark: '#0b2a3d', light: '#ffffff' },
+      });
+      ui.el.phoneQr.classList.remove('hidden');
+    } catch {
+      ui.el.phoneQr.classList.add('hidden'); // code entry still works
+    }
+  }
+
+  async function startPhonePairing() {
+    ui.showMenu('phone');
+    ui.el.phoneStatus.textContent = 'Starting…';
+    if (!phoneHost) {
+      phoneHost = new PhoneHost({
+        onState: onPhoneState,
+        onThrow: onPhoneThrow,
+        onStatus: (kind, detail) => {
+          if (kind === 'waiting') ui.el.phoneStatus.textContent = 'Waiting for your phone…';
+          else if (kind === 'connected') {
+            ui.el.phoneStatus.textContent = 'Connected — tilt to aim';
+            lastPhonePhaseKey = ''; // resend the current phase to the phone
+            broadcastPhonePhase();
+          }
+          else if (kind === 'disconnected') ui.el.phoneStatus.textContent = 'Phone disconnected — re-pair to reconnect';
+          else if (kind === 'error') ui.el.phoneStatus.textContent = 'Error: ' + (detail || 'pairing failed');
+        },
+        onLatency: (ms) => { /* status line above; keep for future HUD */ void ms; },
+      });
+    }
+    const base = new URL('phone.html', location.href).href;
+    try {
+      const { code, url } = await phoneHost.startPairing(base);
+      ui.el.phoneCode.textContent = code;
+      await renderPhoneQr(url);
+      ui.el.phoneStatus.textContent = 'Scan the QR (or open this site on your phone and enter the code)';
+    } catch (e) {
+      ui.el.phoneStatus.textContent = 'Could not start pairing: ' + (e.message || e);
+    }
+  }
+
   // ---------------- main loop ----------------
 
+  let _lastGamePhase = 'ready';
   function fixedUpdate() {
     onlineTick();
+    if (net && currentRoom && currentRoom.status === 'playing'
+        && _lastGamePhase !== 'rolling' && game.phase === 'rolling'
+        && currentRoom.turn && currentRoom.turn.uid === net.uid) {
+      // OUR throw just left the foul line (not a remote replay) — lock input
+      // until the room records it
+      revisionAtThrow = net.revision;
+    }
+    _lastGamePhase = game.phase;
     game.fixedUpdate(FIXED_DT);
+    broadcastPhonePhase();
   }
 
   function render() {
@@ -335,6 +465,14 @@ async function boot() {
     audio.init();
     ui.showMenu('online');
     ui.el.onlineName.focus();
+  });
+  ui.el.menuMain.querySelector('#btn-phone').addEventListener('click', () => {
+    audio.init(); audio.click(); startPhonePairing();
+  });
+  ui.el.menuPhone.querySelector('#btn-phone-back').addEventListener('click', () => {
+    audio.click();
+    if (phoneHost) { phoneHost.close(); phoneHost = null; }
+    ui.showMenu('main');
   });
 
   function selectCount(n) {
@@ -513,4 +651,4 @@ async function boot() {
   frame();
 }
 
-boot();
+if (!IS_PHONE) boot();

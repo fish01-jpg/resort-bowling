@@ -73,6 +73,7 @@
           <button id="btn-solo" class="menu-btn">SOLO PLAY</button>
           <button id="btn-local" class="menu-btn">LOCAL MULTIPLAYER</button>
           <button id="btn-online" class="menu-btn">PLAY ONLINE</button>
+          <button id="btn-phone" class="menu-btn phone-accent">USE PHONE AS CONTROLLER</button>
         </div>
         <!-- local player count -->
         <div id="menu-local" class="menu-screen hidden">
@@ -96,6 +97,16 @@
           <button id="btn-join" class="menu-btn">JOIN ROOM</button>
           <button id="btn-online-back" class="menu-link">Back</button>
           <p id="online-error" class="menu-error hidden"></p>
+        </div>
+        <!-- phone controller pairing -->
+        <div id="menu-phone" class="menu-screen hidden">
+          <p class="menu-label">Pair your phone</p>
+          <canvas id="phone-qr" width="200" height="200"></canvas>
+          <p class="menu-label">or visit this site on your phone and enter</p>
+          <div id="phone-code">----</div>
+          <p id="phone-status" class="menu-note">Starting…</p>
+          <p class="menu-note small-note">Tilt the phone to aim, swing it forward to throw (Wii-style). RECENTER on the phone sets neutral.</p>
+          <button id="btn-phone-back" class="menu-link">Back</button>
         </div>
         <!-- lobby -->
         <div id="menu-lobby" class="menu-screen hidden">
