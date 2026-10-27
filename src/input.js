@@ -41,8 +41,10 @@ export class Input {
     const right = this.keys.has('KeyD') || this.keys.has('ArrowRight');
     const up = this.keys.has('KeyW') || this.keys.has('ArrowUp');
     const down = this.keys.has('KeyS') || this.keys.has('ArrowDown');
-    const aimL = this.keys.has('KeyQ') || left;
-    const aimR = this.keys.has('KeyE') || right;
+    // A/D (or arrows) move position only; Q/E adjust aim only.
+    // (Previously A/D also steered the aim — caused unintended gutter shots.)
+    const aimL = this.keys.has('KeyQ');
+    const aimR = this.keys.has('KeyE');
 
     if (this.charging) {
       // while charging, up/down adjust spin; left/right still position

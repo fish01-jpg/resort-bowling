@@ -26,8 +26,8 @@ function woodLaneTexture() {
       ctx.fillRect(i * bw + Math.random() * bw, y, 1 + Math.random() * 2, 30 + Math.random() * 160);
     }
   }
-  // lane runs z in [-0.8, 18.7] mapped to v in [1 (near), 0 (far)]
-  const zToV = (z) => 1 - (z - (-0.8)) / (18.7 - (-0.8));
+  // lane runs z in [approachStartZ, deckEndZ] mapped to v in [1 (near), 0 (far)]
+  const zToV = (z) => 1 - (z - LANE.approachStartZ) / (LANE.deckEndZ - LANE.approachStartZ);
   // arrows: 7 chevrons at z = 4.57
   ctx.fillStyle = 'rgba(60,40,20,0.85)';
   for (let i = -3; i <= 3; i++) {
@@ -196,11 +196,11 @@ export function createScene(canvasParent) {
   sun.shadow.camera.far = 24;
   scene.add(sun, sun.target);
 
-  // lane
-  const laneLen = 18.7 - (-0.8);
+  // lane + approach — must cover the release point (z=-1.8) and the full rack
+  const laneLen = LANE.deckEndZ - LANE.approachStartZ;
   const laneMat = new THREE.MeshStandardMaterial({ map: woodLaneTexture(), roughness: 0.32 });
   const lane = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.1, laneLen), laneMat);
-  lane.position.set(0, -0.05, (-0.8 + 18.7) / 2);
+  lane.position.set(0, -0.05, (LANE.approachStartZ + LANE.deckEndZ) / 2);
   lane.receiveShadow = true;
   scene.add(lane);
 
@@ -208,21 +208,21 @@ export function createScene(canvasParent) {
   const gutterMat = new THREE.MeshStandardMaterial({ color: '#3a4a4f', roughness: 0.5 });
   for (const side of [-1, 1]) {
     const g = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.1, laneLen), gutterMat);
-    g.position.set(side * 0.645, LANE.gutterFloorY - 0.05, (-0.8 + 18.7) / 2);
+    g.position.set(side * 0.645, LANE.gutterFloorY - 0.05, (LANE.approachStartZ + LANE.deckEndZ) / 2);
     g.receiveShadow = true;
     scene.add(g);
   }
 
-  // pit (dark end)
+  // pit (dark end, starts at deckEndZ)
   const pitMat = new THREE.MeshStandardMaterial({ color: '#101c1a', roughness: 1 });
   const pit = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.05, 2.4), pitMat);
-  pit.position.set(0, -0.33, 19.9);
+  pit.position.set(0, -0.33, LANE.pitZ + 1.1);
   scene.add(pit);
   const curtain = new THREE.Mesh(
     new THREE.BoxGeometry(2.4, 1.6, 0.1),
     new THREE.MeshStandardMaterial({ color: '#12312d', roughness: 1 })
   );
-  curtain.position.set(0, 0.5, 21.2);
+  curtain.position.set(0, 0.5, LANE.pitZ + 2.3);
   scene.add(curtain);
 
   // sign
@@ -230,7 +230,7 @@ export function createScene(canvasParent) {
     new THREE.BoxGeometry(2.6, 0.65, 0.06),
     new THREE.MeshStandardMaterial({ map: signTexture(), roughness: 0.8 })
   );
-  sign.position.set(0, 1.9, 21.05);
+  sign.position.set(0, 1.9, LANE.pitZ + 2.2);
   scene.add(sign);
 
   // side walls + sunset windows
@@ -286,6 +286,49 @@ export function createScene(canvasParent) {
   sweep.castShadow = true;
   scene.add(sweep);
 
+  // sky gradient dome (canvas texture on an inverted sphere)
+  {
+    const c = makeCanvas(16, 256);
+    const ctx = c.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0.0, '#8fcdc0');   // zenith aqua
+    grad.addColorStop(0.42, '#cfe9df'); // mid sky
+    grad.addColorStop(0.58, '#ffdcb2');  // warm horizon band
+    grad.addColorStop(1.0, '#ffbf94');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 16, 256);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(55, 24, 16),
+      new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false })
+    );
+    scene.add(sky);
+  }
+
+  // aim guide — fading dots along the projected path (position + aim + hook curve)
+  const aimGuide = (() => {
+    const group = new THREE.Group();
+    group.visible = false;
+    const dots = [];
+    const n = 16;
+    for (let i = 0; i < n; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: '#173f3a',
+        transparent: true,
+        opacity: 0.55 - (i / n) * 0.45,
+        depthWrite: false,
+      });
+      const dot = new THREE.Mesh(new THREE.CircleGeometry(0.035, 12), mat);
+      dot.rotation.x = -Math.PI / 2;
+      dot.position.y = 0.006;
+      group.add(dot);
+      dots.push(dot);
+    }
+    scene.add(group);
+    return { group, dots };
+  })();
+
   function onResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
@@ -293,5 +336,5 @@ export function createScene(canvasParent) {
   }
   window.addEventListener('resize', onResize);
 
-  return { renderer, scene, camera, ball, pins, sweep, sun };
+  return { renderer, scene, camera, ball, pins, sweep, sun, aimGuide };
 }

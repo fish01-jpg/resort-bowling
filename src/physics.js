@@ -29,9 +29,12 @@ export class Physics {
       col.setRestitution(restitution);
       return col;
     };
-    const laneLen = 18.7 - (-0.8);
-    const laneCz = (-0.8 + 18.7) / 2;
-    // lane + approach (top surface at y=0)
+    const laneStart = LANE.approachStartZ;
+    const laneEnd = LANE.deckEndZ;
+    const laneLen = laneEnd - laneStart;
+    const laneCz = (laneStart + laneEnd) / 2;
+    // lane + approach (top surface at y=0) — must support the release point
+    // AND the full pin rack (rear row at z≈19.14)
     add(RAPIER.ColliderDesc.cuboid(LANE.halfWidth, 0.05, laneLen / 2), 0, -0.05, laneCz, 0.045);
     // gutters (floor top at gutterFloorY)
     for (const side of [-1, 1]) {
@@ -46,9 +49,9 @@ export class Physics {
     for (const side of [-1, 1]) {
       add(RAPIER.ColliderDesc.cuboid(0.05, 1.1, laneLen / 2 + 2), side * 1.15, 1.0, laneCz, 0.1);
     }
-    // pit floor + back wall + pin-deck rear stop
-    add(RAPIER.ColliderDesc.cuboid(1.0, 0.05, 1.2), 0, -0.31, 19.9, 0.2);
-    add(RAPIER.ColliderDesc.cuboid(1.1, 0.8, 0.05), 0, 0.3, 21.15, 0.1);
+    // pit floor + back wall (pit starts at deckEndZ)
+    add(RAPIER.ColliderDesc.cuboid(1.0, 0.05, 1.1), 0, -0.35, LANE.pitZ + 1.1, 0.2);
+    add(RAPIER.ColliderDesc.cuboid(1.1, 0.8, 0.05), 0, 0.3, LANE.pitZ + 2.35, 0.1);
   }
 
   _buildBall() {
@@ -72,21 +75,24 @@ export class Physics {
       .setLinearDamping(0.35)
       .setAngularDamping(0.35);
     const body = this.world.createRigidBody(desc);
-    // main cylinder
+    // main cylinder — collision events enabled for impact sounds
     const cyl = RAPIER.ColliderDesc.cylinder(LANE.pinHeight / 2 - 0.02, 0.052)
       .setTranslation(0, LANE.pinHeight / 2, 0)
       .setDensity(310) // ~1.2 kg
       .setFriction(0.4)
-      .setRestitution(0.05);
+      .setRestitution(0.05)
+      .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
     const c1 = this.world.createCollider(cyl, body);
     // dense base slug to lower the center of mass
     const base = RAPIER.ColliderDesc.ball(0.045)
       .setTranslation(0, 0.05, 0)
       .setDensity(1150) // ~0.44 kg
       .setFriction(0.4)
-      .setRestitution(0.05);
-    this.world.createCollider(base, body);
+      .setRestitution(0.05)
+      .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
+    const c2 = this.world.createCollider(base, body);
     this._pinHandles.set(c1.handle, index);
+    this._pinHandles.set(c2.handle, index);
     body.enableCcd(true);
     return body;
   }
@@ -122,7 +128,8 @@ export class Physics {
     const speed = TUNING.minSpeed + power * (TUNING.maxSpeed - TUNING.minSpeed);
     this.ballBody.setTranslation({ x: position, y: LANE.ballRadius, z: -1.8 }, true);
     this.ballBody.setLinvel({ x: Math.sin(aim) * speed, y: 0, z: Math.cos(aim) * speed }, true);
-    this.ballBody.setAngvel({ x: -speed / LANE.ballRadius, y: 0, z: 0 }, true);
+    // forward roll: rotation about +x for motion along +z
+    this.ballBody.setAngvel({ x: speed / LANE.ballRadius, y: 0, z: 0 }, true);
     this.ballBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
     this.activeSpin = THREE.MathUtils.clamp(spin, -1, 1);
     this._collisions = [];
@@ -149,9 +156,10 @@ export class Physics {
     const upY = 1 - 2 * (q.x * q.x + q.z * q.z);
     const spot = PIN_SPOTS[index];
     const disp = Math.hypot(p.x - spot.x, p.z - spot.z);
-    const standing =
-      upY > 0.75 && disp < 0.35 && p.y > 0 && p.y < 0.5 &&
-      Math.hypot(b.linvel().x, b.linvel().z) < 0.4;
+    // NOTE: no velocity term — motion is handled separately by pinsSettled().
+    // A resting pin's body origin sits at y ≈ -0.005 (colliders start 0.005 above origin),
+    // so the y window must extend below zero.
+    const standing = upY > 0.75 && disp < 0.35 && p.y > -0.12 && p.y < 0.6;
     return { present: true, standing, x: p.x, y: p.y, z: p.z, upY, disp };
   }
 

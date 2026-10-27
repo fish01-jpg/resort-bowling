@@ -5,8 +5,9 @@
 export const LANE = {
   halfWidth: 0.525,        // regulation 1.05m wide
   pinZ: 18.29,            // 60 ft from foul line to headpin
-  approachZ: -3.0,
-  pitZ: 18.7,             // where the pin deck ends
+  approachStartZ: -2.8,   // lane surface + collider start (behind the release point)
+  deckEndZ: 19.4,         // lane surface + collider end (past the rear pin row at ~19.14)
+  pitZ: 19.4,             // pit begins where the deck ends
   ballRadius: 0.1085,
   ballMass: 7.26,
   pinHeight: 0.381,
@@ -28,11 +29,12 @@ export const PIN_SPOTS = (() => {
 export const TUNING = {
   minSpeed: 5.5,
   maxSpeed: 10.5,
-  maxAim: 0.07,          // ~4 degrees
+  maxAim: 0.045,         // ~2.6 degrees
   maxPosition: 0.44,     // lateral ball placement
   hookAccel: 0.5,        // max lateral acceleration from spin (m/s^2)
   chargePeriod: 1.4,     // seconds for full power cycle (up and back)
-  settleTimeout: 7.0,    // force-settle after this long
+  postBallSettle: 3.0,    // max seconds to wait for pins after ball is done
+  settleTimeout: 8.0,    // absolute force-settle after this long
   sweepDuration: 1.1,
 };
 

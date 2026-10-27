@@ -50,22 +50,57 @@ async function boot() {
       tmpPos.set(c.position * 0.5, 0.95, -4.6);
       tmpLook.set(c.position * 0.3 + Math.sin(c.aim) * 6, 0.3, 9);
     } else if (game.phase === 'rolling') {
-      if (bs.z < 14) {
-        tmpPos.set(THREE.MathUtils.clamp(bs.x * 0.55, -0.7, 0.7), 1.15, bs.z - 3.4);
-        tmpLook.set(bs.x, 0.25, bs.z + 2.5);
+      if (bs.z < 14.5) {
+        // tight chase cam behind the ball
+        tmpPos.set(THREE.MathUtils.clamp(bs.x * 0.6, -0.8, 0.8), 1.05, bs.z - 3.0);
+        tmpLook.set(bs.x * 0.8, 0.22, bs.z + 2.2);
       } else {
-        tmpPos.set(0, 1.6, 13.6);
+        // pin-deck cam for the impact
+        tmpPos.set(0, 1.5, 14.3);
         tmpLook.set(0, 0.35, LANE.pinZ + 0.6);
       }
     } else {
-      tmpPos.set(0.55, 1.5, 13.9);
+      tmpPos.set(0.55, 1.5, 14.3);
       tmpLook.set(0, 0.35, LANE.pinZ + 0.6);
     }
-    const k = 1 - Math.exp(-dt * 3.2);
+    const k = 1 - Math.exp(-dt * 5.0);
     camPos.lerp(tmpPos, k);
     camLook.lerp(tmpLook, k);
     scene.camera.position.copy(camPos);
     scene.camera.lookAt(camLook);
+  }
+
+  // Aim guide: fading dots along the projected path — position, aim direction,
+  // and the approximate hook curve from spin (same model as the physics).
+  function updateAimGuide() {
+    const g = scene.aimGuide;
+    const show = game.phase === 'ready';
+    g.group.visible = show;
+    if (!show) return;
+    const c = input.controls;
+    const power = input.charging ? Math.max(0.12, c.power) : 0.7;
+    const speed = TUNING.minSpeed + power * (TUNING.maxSpeed - TUNING.minSpeed);
+    let x = c.position;
+    let z = -1.8;
+    let dxz = Math.tan(c.aim); // dx/dz
+    const step = 0.3;
+    const dots = g.dots;
+    let di = 0;
+    for (let i = 0; i < 1100 && di < dots.length; i++) {
+      const ramp = 0.3 + 0.7 * Math.min(1, Math.max(0, z) / LANE.pinZ) ** 2;
+      const a = c.spin * TUNING.hookAccel * ramp;
+      dxz += (a / (speed * speed)) * step;
+      x += dxz * step;
+      z += step;
+      const target = -1.8 + (di + 1) * 1.05;
+      if (z >= target && z < 17.6) {
+        dots[di].position.set(x, 0.006, z);
+        di++;
+      }
+    }
+    for (let i = di; i < dots.length; i++) {
+      dots[i].position.set(x, 0.006, Math.min(z, 17.5));
+    }
   }
 
   function fixedUpdate() {
@@ -93,6 +128,7 @@ async function boot() {
       }
     }
     updateCamera(delta);
+    updateAimGuide();
     render();
     ui.updateMeters(input.controls, input.charging, game.phase);
     ui.setDebug(`FPS:${_fps.toFixed(0)} ${_ft.toFixed(1)}ms\n${game.phase} f${game.frameIndex + 1} r${game.rollIndex + 1}`);

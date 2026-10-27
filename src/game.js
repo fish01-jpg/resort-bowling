@@ -56,6 +56,7 @@ export class BowlingGame {
     this.standingBefore = this._countStanding();
     this.phase = 'rolling';
     this._settleTimer = 0;
+    this._postBallT = 0;
     this._ballDone = false;
     this._firstImpactDone = false;
     this._pinSoundBudget = 0;
@@ -100,9 +101,17 @@ export class BowlingGame {
       if (ballDone) this._ballDone = true;
 
       this._settleTimer += dt;
+      if (this._ballDone) this._postBallT += dt;
       const pinsQuiet = p.pinsSettled();
       const timeout = this._settleTimer > TUNING.settleTimeout;
-      if (this._ballDone && (pinsQuiet || this._settleTimer > 1.5) || timeout) {
+      // Wait for the pins to actually stop moving after the ball is gone.
+      // (_postBallT is time since ball-finished, unlike _settleTimer which
+      // spans the whole delivery — scoring early froze pins mid-air before.)
+      const readyToScore =
+        this._ballDone &&
+        this._postBallT > 0.35 &&
+        (pinsQuiet || this._postBallT > TUNING.postBallSettle);
+      if (readyToScore || timeout) {
         this._settle();
       }
       return;
@@ -113,12 +122,12 @@ export class BowlingGame {
       const t = Math.min(1, this._sweepT / TUNING.sweepDuration);
       // sweep bar: lower, travel back, rise
       const sweep = this.scene.sweep;
-      const zStart = 17.9, zEnd = 20.6;
+      const zStart = 17.9, zEnd = 20.8;
       if (t < 0.25) {
-        sweep.position.set(0, 2.2 - (2.2 - 0.24) * (t / 0.25), zStart);
+        sweep.position.set(0, 2.2 - (2.2 - 0.55) * (t / 0.25), zStart);
       } else if (t < 0.85) {
         const k = (t - 0.25) / 0.6;
-        sweep.position.set(0, 0.24, zStart + (zEnd - zStart) * k);
+        sweep.position.set(0, 0.55, zStart + (zEnd - zStart) * k);
         // fallen pins get dragged / dropped as the bar passes
         for (const idx of this._sweepFallen) {
           const st = this.physics.pinState(idx);
@@ -130,7 +139,7 @@ export class BowlingGame {
         }
       } else {
         const k = (t - 0.85) / 0.15;
-        sweep.position.set(0, 0.24 + (2.2 - 0.24) * k, zEnd);
+        sweep.position.set(0, 0.55 + (2.2 - 0.55) * k, zEnd);
       }
       if (t >= 1) this._afterSweep();
     }
@@ -283,7 +292,8 @@ export class BowlingGame {
         const pos = b.translation();
         const rot = b.rotation();
         m.visible = true;
-        m.position.set(pos.x, pos.y - 0.02, pos.z);
+        // lathe geometry starts at the pin base = body origin
+        m.position.set(pos.x, pos.y, pos.z);
         m.quaternion.set(rot.x, rot.y, rot.z, rot.w);
       } else {
         m.visible = false;
