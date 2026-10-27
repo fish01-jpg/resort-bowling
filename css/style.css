@@ -726,3 +726,28 @@ kbd {
   background: linear-gradient(180deg, #4cc9f0, #4aa8d8);
   box-shadow: 0 6px 18px rgba(76, 201, 240, 0.3);
 }
+
+#phone-pair-row { display: flex; gap: 18px; justify-content: center; }
+#phone-pair-row.hidden { display: none; }
+.menu-link.danger { color: #ef5d43; }
+
+/* phone settings screen */
+.seg-row {
+  display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+}
+.seg-btn {
+  padding: 10px 14px;
+  font-size: 13px; font-weight: 600; letter-spacing: 1px;
+  color: #cfe6f2;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+}
+.seg-btn.selected {
+  color: #062739;
+  background: linear-gradient(180deg, #ffd9a0, #f7b267);
+  border-color: #f7b267;
+}
+.settings-desc {
+  margin: 0; font-size: 13px; color: #9fc3d8; max-width: 300px;
+}

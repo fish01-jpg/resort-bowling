@@ -85,3 +85,17 @@ export function axisAngle(x, y, z, angle) {
   const s = Math.sin(h);
   return { w: Math.cos(h), x: x * s, y: y * s, z: z * s };
 }
+
+/**
+ * Map extracted angles to controller output for a control-scheme preset.
+ *   'wheel'  (default): wheel-tilt steers the ball, turning aims (Wii-style)
+ *   'twist'           : turning steers the ball, wheel-tilt aims (swapped)
+ *   'swing'           : ball stays centered; turning aims; swing throws
+ * `sensitivity` scales both angles (a gain > 1 = less tilt needed).
+ */
+export function applyControlScheme({ steer, aim }, scheme = 'wheel', sensitivity = 1) {
+  let s = steer, a = aim;
+  if (scheme === 'twist') { const t = s; s = a; a = t; }
+  else if (scheme === 'swing') s = 0;
+  return { steer: s * sensitivity, aim: a * sensitivity };
+}

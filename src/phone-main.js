@@ -9,7 +9,8 @@ import {
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { PhoneClient } from './rtc.js';
 import {
-  quatFromEuler, quatConj, quatMul, relativeRotation, extractAngles, DEG,
+  quatFromEuler, quatConj, quatMul, relativeRotation, extractAngles,
+  applyControlScheme, DEG,
 } from './orientation.js';
 
 const FIREBASE_CONFIG = {
@@ -150,9 +151,10 @@ function onOrient(e) {
   const rel = relativeRotation(qCal, qNow);
   angles = extractAngles(rel);
 
-  // visual
-  tilt.style.transform = `translate(${(angles.steer / MAX_STEER) * 130}%, ${(angles.aim / MAX_AIM) * 130}%)`;
-  tiltBg.style.opacity = String(Math.min(1, Math.abs(angles.steer / MAX_STEER) + Math.abs(angles.aim / MAX_AIM) / 2));
+  // visual (through the active scheme preset)
+  const m = mappedAngles();
+  tilt.style.transform = `translate(${(m.steer / MAX_STEER) * 130}%, ${(m.aim / MAX_AIM) * 130}%)`;
+  tiltBg.style.opacity = String(Math.min(1, Math.abs(m.steer / MAX_STEER) + Math.abs(m.aim / MAX_AIM) / 2));
 }
 
 /**
@@ -233,12 +235,61 @@ function sendThrow(power, spin) {
   lastThrowAt = performance.now();
   // snapshot the release orientation together with power/spin so the host
   // maps the throw atomically instead of racing the 30Hz tilt stream
+  const m = mappedAngles();
   client.sendCtl({
     t: 'throw', id: Math.random().toString(36).slice(2), power, spin,
-    steer: angles.steer, aim: angles.aim,
+    steer: m.steer, aim: m.aim,
   });
   setStatus('ok', 'Thrown');
   setTimeout(() => setStatus('ok', 'Connected'), 900);
+}
+
+// ------------------------------ settings ---------------------------------
+// Control-scheme presets + sensitivity. Persisted when the browser allows it
+// (private-mode Safari etc. silently falls back to defaults for the session).
+const SCHEME_DESC = {
+  wheel: 'Tilt the phone like a steering wheel to move the ball. Turn it left/right to aim.',
+  twist: 'Turn the phone left/right to move the ball. Tilt it to aim.',
+  swing: 'Ball stays centered — just turn to aim and swing to throw. Easiest.',
+};
+const settings = { scheme: 'wheel', sens: 1 };
+try {
+  const saved = JSON.parse(localStorage.getItem('sl-phone-settings') || 'null');
+  if (saved && saved.scheme in SCHEME_DESC && Number.isFinite(saved.sens)) {
+    settings.scheme = saved.scheme;
+    settings.sens = saved.sens;
+  }
+} catch { /* no storage — defaults are fine */ }
+function saveSettings() {
+  try { localStorage.setItem('sl-phone-settings', JSON.stringify(settings)); } catch { /* ignore */ }
+}
+
+/** Map raw extracted angles through the active scheme preset. */
+function mappedAngles() {
+  return applyControlScheme(angles, settings.scheme, settings.sens);
+}
+
+const settingsScreen = $('settings-screen');
+$('setup-btn').addEventListener('click', () => { show(settingsScreen); refreshSettingsUI(); });
+$('settings-back').addEventListener('click', () => show(ctlScreen));
+$('scheme-row').querySelectorAll('.seg-btn').forEach((b) => {
+  b.addEventListener('click', () => {
+    settings.scheme = b.dataset.scheme;
+    saveSettings(); refreshSettingsUI(); updateThrowUI();
+  });
+});
+$('sens-row').querySelectorAll('.seg-btn').forEach((b) => {
+  b.addEventListener('click', () => {
+    settings.sens = Number(b.dataset.sens);
+    saveSettings(); refreshSettingsUI();
+  });
+});
+function refreshSettingsUI() {
+  $('scheme-row').querySelectorAll('.seg-btn').forEach((b) =>
+    b.classList.toggle('selected', b.dataset.scheme === settings.scheme));
+  $('sens-row').querySelectorAll('.seg-btn').forEach((b) =>
+    b.classList.toggle('selected', Number(b.dataset.sens) === settings.sens));
+  $('scheme-desc').textContent = SCHEME_DESC[settings.scheme];
 }
 
 // ------------------------------ controls ---------------------------------
@@ -262,8 +313,10 @@ throwBtn.addEventListener('click', () => {
 });
 
 function updateThrowUI() {
+  const aimWord = settings.scheme === 'twist' ? 'tilt' : 'turn';
   swingHint.textContent = canThrow
-    ? (buttonMode ? 'Aim with tilt — tap THROW' : 'Aim with tilt — SWING to throw')
+    ? (buttonMode ? `${aimWord[0].toUpperCase() + aimWord.slice(1)} to aim — tap THROW`
+                 : `${aimWord[0].toUpperCase() + aimWord.slice(1)} to aim — SWING to throw`)
     : 'Waiting for your turn…';
   throwBtn.disabled = !canThrow;
 }
@@ -274,7 +327,8 @@ function tick() {
   const now = performance.now();
   if (client && client.connected && now - lastSent >= 33) {
     lastSent = now;
-    client.sendState(++seq, clamp(angles.steer, -MAX_STEER, MAX_STEER), clamp(angles.aim, -MAX_AIM, MAX_AIM));
+    const m = mappedAngles();
+    client.sendState(++seq, clamp(m.steer, -MAX_STEER, MAX_STEER), clamp(m.aim, -MAX_AIM, MAX_AIM));
   }
   calTick();
   requestAnimationFrame(tick);

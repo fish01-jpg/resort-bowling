@@ -380,9 +380,18 @@ async function boot() {
     }
   }
 
+  function updatePhoneNotes() {
+    const connected = !!(phoneHost && phoneHost.connected);
+    ui.el.phoneMenuNote.classList.toggle('hidden', !connected);
+    ui.el.phoneConnectedNote.classList.toggle('hidden', !connected);
+    ui.el.phonePairRow.classList.toggle('hidden', !connected);
+  }
+
   async function startPhonePairing() {
     ui.showMenu('phone');
     ui.el.phoneDone.classList.add('hidden');
+    ui.el.phonePairRow.classList.add('hidden');
+    updatePhoneNotes();
     ui.el.phoneStatus.textContent = 'Starting…';
     if (!phoneHost) {
       phoneHost = new PhoneHost({
@@ -391,13 +400,14 @@ async function boot() {
         onStatus: (kind, detail) => {
           if (kind === 'waiting') ui.el.phoneStatus.textContent = 'Waiting for your phone…';
           else if (kind === 'connected') {
-            ui.el.phoneStatus.textContent = 'Connected — tilt to aim';
+            ui.el.phoneStatus.textContent = 'Connected — the QR is no longer needed';
             ui.el.phoneDone.classList.remove('hidden');
             lastPhonePhaseKey = ''; // resend the current phase to the phone
             broadcastPhonePhase();
           }
           else if (kind === 'disconnected') ui.el.phoneStatus.textContent = 'Phone disconnected — re-pair to reconnect';
           else if (kind === 'error') ui.el.phoneStatus.textContent = 'Error: ' + (detail || 'pairing failed');
+          updatePhoneNotes();
         },
         onLatency: (ms) => { /* status line above; keep for future HUD */ void ms; },
       });
@@ -485,12 +495,23 @@ async function boot() {
     audio.init(); audio.click();
     ui.el.phoneDone.classList.add('hidden');
     ui.showMenu('main'); // connection stays live; pick a mode and bowl
+    updatePhoneNotes();
   });
+  // Back HIDES the pairing screen — it only kicks the phone if pairing never
+  // completed. Disconnect is explicit and separate.
   ui.el.menuPhone.querySelector('#btn-phone-back').addEventListener('click', () => {
+    audio.click();
+    if (phoneHost && !phoneHost.connected) { phoneHost.close(); phoneHost = null; }
+    ui.el.phoneDone.classList.add('hidden');
+    ui.showMenu('main');
+    updatePhoneNotes();
+  });
+  ui.el.phoneDisconnect.addEventListener('click', () => {
     audio.click();
     if (phoneHost) { phoneHost.close(); phoneHost = null; }
     ui.el.phoneDone.classList.add('hidden');
     ui.showMenu('main');
+    updatePhoneNotes();
   });
 
   function selectCount(n) {

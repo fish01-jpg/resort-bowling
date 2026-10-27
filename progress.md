@@ -224,3 +224,24 @@ Tests: orientation 24/24 (signs, tilted grip, wraparound, no neutral jump),
 controls 15/15 (incl. replay no-double-scatter), revision 6/6 (real
 Firestore), online 15/15, match 24/24, physics 11/11, scoring 32/32,
 fullgame sim OK.
+
+## Session 5 — pairing flow + phone control presets
+
+- Pairing screen: Back no longer kicks a connected phone — it just hides
+  the QR/pairing screen and keeps the connection (only an unfinished
+  pairing is canceled). Explicit "Disconnect phone" link added. "DONE —
+  PICK A MODE" leads to the normal mode menu (SOLO / LOCAL with 2-4
+  players / ONLINE); a "PHONE CONTROLLER CONNECTED" note stays visible on
+  the main menu while paired.
+- Phone SETUP panel (new settings screen on phone.html): control-scheme
+  presets — WHEEL (tilt steers, turn aims — default), TWIST (turn steers,
+  tilt aims), SWING ONLY (ball auto-centered, turn to aim, swing to throw)
+  — plus sensitivity presets LOW / STD / HIGH (0.6x / 1x / 1.6x gain).
+  Settings persist via localStorage when the browser allows it (silently
+  falls back to defaults otherwise). The tilt indicator, 30Hz stream, and
+  throw snapshots all go through the active preset; the on-screen hint
+  text updates per scheme.
+- Scheme mapping extracted into orientation.js applyControlScheme (pure,
+  unit-tested: swap, zero-center, sensitivity gain, composition).
+- Tests: orientation 31/31, controls 15/15, match 24/24, online 15/15,
+  revision 6/6, physics 11/11 — no regressions.

@@ -52,7 +52,28 @@
     <footer class="phone-bottom">
       <button id="cal-btn" class="phone-btn small">RECENTER</button>
       <button id="mode-btn" class="phone-btn small">MODE: SWING</button>
+      <button id="setup-btn" class="phone-btn small">SETUP</button>
     </footer>
+  </section>
+
+  <!-- 4. settings: control scheme + sensitivity presets -->
+  <section id="settings-screen" class="phone-screen">
+    <h1 class="phone-title">SETUP</h1>
+    <p class="phone-label">Control scheme</p>
+    <div class="seg-row" id="scheme-row">
+      <button class="seg-btn" data-scheme="wheel">WHEEL</button>
+      <button class="seg-btn" data-scheme="twist">TWIST</button>
+      <button class="seg-btn" data-scheme="swing">SWING ONLY</button>
+    </div>
+    <p class="settings-desc" id="scheme-desc"></p>
+    <p class="phone-label">Sensitivity</p>
+    <div class="seg-row" id="sens-row">
+      <button class="seg-btn" data-sens="0.6">LOW</button>
+      <button class="seg-btn" data-sens="1">STD</button>
+      <button class="seg-btn" data-sens="1.6">HIGH</button>
+    </div>
+    <p class="settings-desc">Less tilt needed at higher sensitivity.</p>
+    <button id="settings-back" class="phone-btn small">BACK</button>
   </section>
 
 </div>

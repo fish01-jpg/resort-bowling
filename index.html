@@ -71,6 +71,7 @@
         <!-- main mode select -->
         <div id="menu-main" class="menu-screen">
           <button id="btn-solo" class="menu-btn">SOLO PLAY</button>
+          <p id="phone-menu-note" class="menu-note hidden">PHONE CONTROLLER CONNECTED</p>
           <button id="btn-local" class="menu-btn">LOCAL MULTIPLAYER</button>
           <button id="btn-online" class="menu-btn">PLAY ONLINE</button>
           <button id="btn-phone" class="menu-btn phone-accent">USE PHONE AS CONTROLLER</button>
@@ -105,9 +106,13 @@
           <p class="menu-label">or visit this site on your phone and enter</p>
           <div id="phone-code">----</div>
           <p id="phone-status" class="menu-note">Starting…</p>
-          <p class="menu-note small-note">Tilt the phone to aim, swing it forward to throw (Wii-style). RECENTER on the phone sets neutral.</p>
-          <button id="btn-phone-done" class="menu-btn hidden">DONE — START BOWLING</button>
-          <button id="btn-phone-back" class="menu-link">Back (disconnect)</button>
+          <p class="menu-note small-note">Tilt the phone to steer, swing it forward to throw (Wii-style). RECENTER sets neutral; SETUP on the phone has control-scheme presets (wheel / twist / swing-only) and sensitivity.</p>
+          <button id="btn-phone-done" class="menu-btn hidden">DONE — PICK A MODE</button>
+          <div id="phone-pair-row" class="hidden">
+            <button id="btn-phone-back" class="menu-link">Back</button>
+            <button id="btn-phone-disconnect" class="menu-link danger">Disconnect phone</button>
+          </div>
+          <p id="phone-connected-note" class="menu-note hidden">Phone controller connected — pick a mode and bowl</p>
         </div>
         <!-- lobby -->
         <div id="menu-lobby" class="menu-screen hidden">
