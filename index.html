@@ -29,6 +29,9 @@
 
     <div id="message"></div>
 
+    <div id="turn-banner" class="hidden"></div>
+    <aside id="match-panel" class="hidden"></aside>
+
     <div id="bottom-hud">
       <aside id="controls-panel">
         <h3>Controls</h3>
@@ -56,16 +59,60 @@
     </div>
   </div>
 
-  <!-- Title screen / game over -->
+  <!-- Title screen / menus / game over -->
   <div id="overlay" class="show">
     <div id="overlay-card">
       <h1 id="overlay-title">SUNSET LANES</h1>
       <p id="overlay-sub">Resort Bowling — 10 frames, real rules, real physics</p>
       <button id="overlay-btn">PLAY</button>
+
+      <!-- Multiplayer menus -->
+      <div id="menu-panel" class="hidden">
+        <!-- main mode select -->
+        <div id="menu-main" class="menu-screen">
+          <button id="btn-solo" class="menu-btn">SOLO PLAY</button>
+          <button id="btn-local" class="menu-btn">LOCAL MULTIPLAYER</button>
+          <button id="btn-online" class="menu-btn">PLAY ONLINE</button>
+        </div>
+        <!-- local player count -->
+        <div id="menu-local" class="menu-screen hidden">
+          <p class="menu-label">How many bowlers?</p>
+          <div id="local-count-row">
+            <button class="count-btn" data-count="2">2</button>
+            <button class="count-btn" data-count="3">3</button>
+            <button class="count-btn" data-count="4">4</button>
+          </div>
+          <div id="local-names"></div>
+          <button id="btn-local-start" class="menu-btn">START MATCH</button>
+          <button id="btn-local-back" class="menu-link">Back</button>
+        </div>
+        <!-- online setup -->
+        <div id="menu-online" class="menu-screen hidden">
+          <p class="menu-label">Your name</p>
+          <input id="online-name" class="menu-input" maxlength="14" placeholder="Bowler" autocomplete="off" />
+          <button id="btn-create" class="menu-btn">CREATE ROOM</button>
+          <p class="menu-label">or join with a code</p>
+          <input id="join-code" class="menu-input" maxlength="4" placeholder="ABCD" autocomplete="off" autocapitalize="characters" />
+          <button id="btn-join" class="menu-btn">JOIN ROOM</button>
+          <button id="btn-online-back" class="menu-link">Back</button>
+          <p id="online-error" class="menu-error hidden"></p>
+        </div>
+        <!-- lobby -->
+        <div id="menu-lobby" class="menu-screen hidden">
+          <p class="menu-label">Room code</p>
+          <div id="lobby-code">----</div>
+          <p class="menu-label">Bowlers</p>
+          <ul id="lobby-players"></ul>
+          <button id="btn-start-match" class="menu-btn">START MATCH</button>
+          <p id="lobby-waiting" class="menu-note hidden">Waiting for the host to start…</p>
+          <button id="btn-leave" class="menu-link">Leave room</button>
+        </div>
+      </div>
     </div>
     <div id="final-panel">
       <div id="final-score">0</div>
       <div id="final-rank">SOLID GAME</div>
+      <div id="final-standings" class="hidden"></div>
       <button id="play-again">PLAY AGAIN</button>
     </div>
   </div>

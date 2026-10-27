@@ -24,6 +24,22 @@ export class UI {
       debug: document.getElementById('debug'),
       muteBtn: document.getElementById('mute-btn'),
       restartBtn: document.getElementById('restart-btn'),
+      turnBanner: document.getElementById('turn-banner'),
+      matchPanel: document.getElementById('match-panel'),
+      menuPanel: document.getElementById('menu-panel'),
+      menuMain: document.getElementById('menu-main'),
+      menuLocal: document.getElementById('menu-local'),
+      menuOnline: document.getElementById('menu-online'),
+      menuLobby: document.getElementById('menu-lobby'),
+      localNames: document.getElementById('local-names'),
+      onlineName: document.getElementById('online-name'),
+      joinCode: document.getElementById('join-code'),
+      onlineError: document.getElementById('online-error'),
+      lobbyCode: document.getElementById('lobby-code'),
+      lobbyPlayers: document.getElementById('lobby-players'),
+      lobbyWaiting: document.getElementById('lobby-waiting'),
+      btnStartMatch: document.getElementById('btn-start-match'),
+      finalStandings: document.getElementById('final-standings'),
     };
     this._msgTimer = null;
     this._buildScorecard();
@@ -148,6 +164,121 @@ export class UI {
     this.el.finalPanel.classList.add('show');
     this.el.overlayTitle.parentElement.style.display = 'none';
     this.el.overlay.classList.add('show');
+  }
+
+  // ---------------- multiplayer ----------------
+
+  /** Show one menu screen: 'main' | 'local' | 'online' | 'lobby' | null (hide all). */
+  showMenu(screen) {
+    this.el.menuPanel.classList.toggle('hidden', screen == null);
+    for (const [key, id] of [['main', 'menuMain'], ['local', 'menuLocal'], ['online', 'menuOnline'], ['lobby', 'menuLobby']]) {
+      this.el[id].classList.toggle('hidden', screen !== key);
+    }
+    if (screen === 'online') this.el.onlineError.classList.add('hidden');
+  }
+
+  /** Title screen (solo start). */
+  showTitle() {
+    this.el.overlayTitle.parentElement.style.display = '';
+    this.el.overlay.classList.add('show');
+    this.showMenu(null);
+  }
+
+  onlineError(msg) {
+    this.el.onlineError.textContent = msg;
+    this.el.onlineError.classList.remove('hidden');
+  }
+
+  /** Lobby: room code + roster + host start button. */
+  showLobby(room, myUid) {
+    this.showMenu('lobby');
+    this.el.lobbyCode.textContent = room.code || '----';
+    const ul = this.el.lobbyPlayers;
+    ul.innerHTML = '';
+    (room.players || []).forEach((p, i) => {
+      const li = document.createElement('li');
+      li.textContent = p.name;
+      if (i === 0) li.classList.add('host');
+      if (p.uid === myUid) li.textContent += ' (you)';
+      ul.appendChild(li);
+    });
+    const isHost = room.players && room.players[0].uid === myUid;
+    this.el.btnStartMatch.style.display = isHost ? '' : 'none';
+    this.el.lobbyWaiting.classList.toggle('hidden', isHost);
+  }
+
+  /** Build the local-setup name inputs for N players. */
+  buildLocalNames(count) {
+    const wrap = this.el.localNames;
+    wrap.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const input = document.createElement('input');
+      input.className = 'menu-input';
+      input.maxLength = 12;
+      input.placeholder = 'Bowler ' + (i + 1);
+      input.dataset.slot = i;
+      if (i === 0) input.autofocus = true;
+      wrap.appendChild(input);
+    }
+  }
+
+  setTurnBanner(text, sub = '') {
+    const b = this.el.turnBanner;
+    if (!text) { b.classList.add('hidden'); return; }
+    b.innerHTML = '';
+    b.append(text);
+    if (sub) {
+      const sp = document.createElement('span');
+      sp.className = 'sub';
+      sp.textContent = sub;
+      b.append(sp);
+    }
+    b.classList.remove('hidden');
+  }
+
+  /**
+   * Standings sidebar. rows: [{name, total, done, active}]
+   */
+  updateMatchPanel(rows) {
+    const panel = this.el.matchPanel;
+    if (!rows || rows.length < 2) { panel.classList.add('hidden'); return; }
+    panel.innerHTML = '';
+    const h = document.createElement('h3');
+    h.textContent = 'Standings';
+    panel.appendChild(h);
+    for (const r of rows) {
+      const div = document.createElement('div');
+      div.className = 'mp-row' + (r.active ? ' active' : '') + (r.done ? ' done' : '');
+      const name = document.createElement('span');
+      name.textContent = r.name;
+      const total = document.createElement('span');
+      total.className = 'mp-total';
+      total.textContent = r.total;
+      div.append(name, total);
+      panel.appendChild(div);
+    }
+    panel.classList.remove('hidden');
+  }
+
+  /** Multiplayer game over: standings with winner on top. */
+  showMatchOver(standings) {
+    const el = this.el.finalStandings;
+    el.innerHTML = '';
+    standings.forEach((row, i) => {
+      const div = document.createElement('div');
+      div.className = 'fs-row' + (i === 0 ? ' winner' : '');
+      const name = document.createElement('span');
+      name.textContent = row.name + (i === 0 ? ' 🏆' : '');
+      const total = document.createElement('span');
+      total.textContent = row.total;
+      div.append(name, total);
+      el.appendChild(div);
+    });
+    el.classList.remove('hidden');
+    this.el.finalPanel.classList.add('show');
+    this.el.overlayTitle.parentElement.style.display = 'none';
+    this.el.overlay.classList.add('show');
+    this.setTurnBanner('');
   }
 
   setDebug(text) {

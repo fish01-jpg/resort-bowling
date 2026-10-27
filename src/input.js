@@ -8,15 +8,26 @@ export class Input {
     this.keys = new Set();
     this.charging = false;
     this.chargeT = 0;
+    this.enabled = true; // false = turn belongs to someone else (multiplayer)
     this.controls = { position: 0, aim: 0, power: 0, spin: 0 };
     this.onThrow = null; // set by game
     this._lastCharging = false;
     this._attach();
   }
 
+  /** Lock input (other player's turn in online mode). */
+  setEnabled(on) {
+    this.enabled = on;
+    if (!on) {
+      this.keys.clear();
+      if (this.charging) { this.charging = false; this.chargeT = 0; }
+    }
+  }
+
   _attach() {
     window.addEventListener('keydown', (e) => {
       if (['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
+      if (!this.enabled) return;
       this.keys.add(e.code);
       if (e.code === 'Space' && !e.repeat) this.charging = true;
     });
@@ -36,6 +47,7 @@ export class Input {
 
   /** dt in seconds. Call once per fixed step during the 'ready' phase. */
   update(dt) {
+    if (!this.enabled) return;
     const c = this.controls;
     const left = this.keys.has('KeyA') || this.keys.has('ArrowLeft');
     const right = this.keys.has('KeyD') || this.keys.has('ArrowRight');

@@ -63,3 +63,19 @@ tests/scoring.test.mjs — rules engine tests
 - Touch controls, gamepad support, motion (device-orientation) controls
 - Multiplayer (pass-and-play), online play
 - Lane oil patterns, ball selection, spin practice mode
+
+## Multiplayer
+
+- **Local hot-seat (2-4 players)**: pick LOCAL MULTIPLAYER on the title screen.
+  Real bowling rotation — each bowler finishes their frame before the next one is up.
+- **Play online**: create a room, share the 4-letter code, friends join from
+  anywhere. Turn-based with live replays of remote throws, standings sidebar,
+  and a 90-second auto-skip for absent players. Refresh + rejoin with the same
+  name to reclaim your seat.
+
+### Firebase security note
+The provided Firestore project currently allows open read/write (test mode).
+For a public Pages deployment, lock it down in the Firebase console with
+scoped rules, e.g. allow read/write on `/bowlingRooms/{code}` only while
+documents keep a valid shape (players array, rolls map, turn object), and
+consider requiring anonymous auth.

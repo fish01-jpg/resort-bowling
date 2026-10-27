@@ -1,15 +1,24 @@
 import { Game } from './scoring.js';
 import { PIN_SPOTS, TUNING, LANE } from './constants.js';
+import { Match, playerProgress, FULL_RACK } from './match.js';
 
 // Phases: 'ready' (aim/charge) -> 'rolling' -> 'settling' -> 'sweep' -> 'ready' | 'gameover'
+// Modes: solo (no match/net), local hot-seat (match), online (net).
 export class BowlingGame {
-  constructor({ physics, scene, input, ui, audio }) {
+  constructor({ physics, scene, input, ui, audio, match = null, net = null }) {
     this.physics = physics;
     this.scene = scene;
     this.input = input;
     this.ui = ui;
     this.audio = audio;
+    this.net = net;          // online: submits rolls to the room, never scores locally
+    this.match = match;      // local hot-seat: turn rotation across players
     this.game = new Game();
+    this.replay = false;     // replaying a remote player's throw (visuals only)
+    this._replayRack = null;
+    this._replayKnocked = null;
+    this._replayLabel = '';
+    this._lastThrowParams = null;
     this.phase = 'ready';
     this.frameIndex = 0; // 0-based
     this.rollIndex = 0; // 0-based within frame
@@ -36,6 +45,35 @@ export class BowlingGame {
     this.ui.message('Welcome to Sunset Lanes', 'info', 1800);
   }
 
+  /** Hot-seat: begin (or restart) a local match. */
+  startWithMatch(match) {
+    this.match = match;
+    this.net = null;
+    this.game = match.players[0].game;
+    this.frameIndex = 0;
+    this.rollIndex = 0;
+    this.standingBefore = 10;
+    this.physics.resetRack(FULL_RACK.slice());
+    this._showAllPins();
+    this._resetBall();
+    this.phase = 'ready';
+    this._syncUI();
+    this.ui.message(`${match.players[0].name} up — Frame 1`, 'info', 2000);
+  }
+
+  /** Online: adopt the room context — my game, the authoritative rack, frame/ball. */
+  adoptOnlineContext({ game, rack, frame, ball }) {
+    this.match = null;
+    this.game = game;
+    this.frameIndex = frame;
+    this.rollIndex = ball;
+    this.physics.resetRack(rack);
+    this._showAllPins();
+    this._resetBall();
+    this.phase = 'ready';
+    this._syncUI();
+  }
+
   _resetBall() {
     const c = this.input.controls;
     this.physics.ballBody.setTranslation(
@@ -47,6 +85,7 @@ export class BowlingGame {
 
   _throw(controls) {
     if (this.phase !== 'ready') return;
+    this._lastThrowParams = { ...controls };
     this.physics.throwBall({
       position: controls.position,
       aim: controls.aim,
@@ -63,6 +102,21 @@ export class BowlingGame {
     this._pinSoundBudget = 0;
     this.ui.updateScorecard(this.game, this._displayFrame());
     this.ui.message('', '', 0);
+  }
+
+  /**
+   * Replay a remote player's throw: real physics for visuals only — the roll is
+   * never recorded locally; after the sweep the rack snaps to the authoritative
+   * standing set from the room.
+   */
+  replayThrow(params, standingAfter, knocked, label = '') {
+    if (this.phase !== 'ready') return false;
+    this.replay = true;
+    this._replayRack = standingAfter;
+    this._replayKnocked = knocked;
+    this._replayLabel = label;
+    this._throw({ ...params });
+    return true;
   }
 
   _countStanding() {
@@ -162,14 +216,23 @@ export class BowlingGame {
 
   _settle() {
     const standing = this._countStanding();
-    const knocked = Math.max(0, this.standingBefore - standing);
+    let knocked = Math.max(0, this.standingBefore - standing);
+    if (this.replay && this._replayKnocked != null) knocked = this._replayKnocked;
     this.audio.setRollIntensity(0);
     this.phase = 'sweep';
     this._sweepT = 0;
     this._swept = [];
 
-    // record the roll
-    this.game.rolls.push(knocked);
+    if (this.net && !this.replay) {
+      // online: the room is the single scoring authority — submit and let the
+      // room snapshot drive the next rack/turn. Never record locally.
+      const standingAfter = [];
+      for (let i = 0; i < 10; i++) standingAfter.push(this.physics.pinState(i).standing);
+      this.net.submitRoll({ params: this._lastThrowParams, knocked, standingAfter });
+    } else if (!this.replay) {
+      // record the roll (solo + local hot-seat)
+      this.game.rolls.push(knocked);
+    }
 
     // which pins are fallen (for the sweeper)
     this._sweepFallen = [];
@@ -182,14 +245,15 @@ export class BowlingGame {
 
     // messages
     const wasFullRack = this.standingBefore === 10;
+    const label = this.replay ? this._replayLabel + ': ' : '';
     if (knocked === 10 && wasFullRack) {
-      this.ui.message('STRIKE!', 'strike', 2200);
+      this.ui.message(label + 'STRIKE!', 'strike', 2200);
       this.audio.jingle('strike');
     } else if (standing === 0 && !wasFullRack) {
-      this.ui.message('SPARE!', 'spare', 2000);
+      this.ui.message(label + 'SPARE!', 'spare', 2000);
       this.audio.jingle('spare');
     } else if (knocked === 0) {
-      this.ui.message('GUTTER…', 'gutter', 1500);
+      this.ui.message(label + 'GUTTER…', 'gutter', 1500);
       this.audio.jingle('none');
     }
 
@@ -197,9 +261,37 @@ export class BowlingGame {
   }
 
   _afterSweep() {
+    // replay of a remote throw: snap to the authoritative rack, no bookkeeping
+    if (this.replay) {
+      this.replay = false;
+      this.physics.resetRack(this._replayRack || FULL_RACK.slice());
+      this._showAllPins();
+      this._resetBall();
+      this.phase = 'ready';
+      this._syncUI();
+      if (this.net && this.net.onReplayDone) this.net.onReplayDone();
+      return;
+    }
+
+    // online: the room snapshot re-applies rack/turn context after our
+    // submission — lock input; the room re-enables it when it's our turn again
+    if (this.net) {
+      this._resetBall();
+      this.phase = 'ready';
+      this.input.setEnabled(false);
+      this._syncUI();
+      return;
+    }
+
     // raise sweep done; decide next rack & frame
+    const bowledFrame = this.frameIndex;
     const frames = this.game.frames();
     const complete = this.game.isComplete();
+    if (complete && this.match) {
+      if (this.match.allDone()) { this._matchOver(); return; }
+      this._switchPlayer();
+      return;
+    }
     if (complete) {
       this.phase = 'gameover';
       this.audio.setRollIntensity(0);
@@ -234,6 +326,14 @@ export class BowlingGame {
       }
     }
 
+    // hot-seat: if the active player's frame is complete, pass the turn
+    // (fresh rack for the next player)
+    if (this.match && this.match.turnEnded(this.game, bowledFrame)) {
+      if (this.match.allDone()) { this._matchOver(); return; }
+      this._switchPlayer();
+      return;
+    }
+
     if (keepStanding === null || keepStanding === false) {
       // full rack
       this.physics.resetRack(PIN_SPOTS.map(() => true));
@@ -249,6 +349,30 @@ export class BowlingGame {
     this._resetBall();
     this.phase = 'ready';
     this._syncUI();
+  }
+
+  /** Hot-seat: hand the lane to the next player with a fresh rack. */
+  _switchPlayer() {
+    const next = this.match.advanceTurn();
+    if (!next) { this._matchOver(); return; }
+    this.game = next.game;
+    const prog = playerProgress(next.game);
+    this.frameIndex = prog.frame;
+    this.rollIndex = prog.ball;
+    this.standingBefore = 10;
+    this.physics.resetRack(FULL_RACK.slice());
+    this._showAllPins();
+    this._resetBall();
+    this.phase = 'ready';
+    this._syncUI();
+    this.ui.message(`${next.name} up — Frame ${prog.frame + 1}`, 'info', 2000);
+  }
+
+  _matchOver() {
+    this.phase = 'gameover';
+    this.audio.setRollIntensity(0);
+    if (this.ui.showMatchOver) this.ui.showMatchOver(this.match.standings());
+    this.ui.updateScorecard(this.game, -1);
   }
 
   _finish() {
@@ -273,6 +397,15 @@ export class BowlingGame {
 
   _syncUI() {
     this.ui.updateScorecard(this.game, this._displayFrame());
+    if (this.match && this.ui.updateMatchPanel) {
+      const rows = this.match.players.map((p) => ({
+        name: p.name,
+        total: p.game.totalScore() ?? 0,
+        done: p.game.isComplete(),
+        active: p === this.match.active,
+      }));
+      this.ui.updateMatchPanel(rows);
+    }
     const frames = this.game.frames();
     this.ui.setFrameIndicator(
       Math.min(this.frameIndex + 1, 10),

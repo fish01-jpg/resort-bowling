@@ -106,3 +106,38 @@ Changes:
 - Verified headlessly: 11/11 physics tests, 32/32 scoring tests, full games avg
   ~120 with 1-4 strikes. Perfect pocket throw strikes at any power; human-jitter
   pocket throws strike ~25%; dead-center straight leaves 6-7 pins; gutter = 0.
+
+## Multiplayer (2026-10-27)
+
+User asked for local + online multiplayer and provided a Firebase web config.
+
+- `src/match.js` (new): pure match/turn logic shared by both modes —
+  playerProgress, frameNowComplete, hot-seat Match controller, and
+  applyRollToRoom (the online roll state transition, used inside the Firestore
+  transaction so clients and tests share one code path).
+- Local hot-seat (2-4 players): real bowling rotation — each player finishes
+  their frame before the turn passes (10th-frame bonus rolls included).
+  Per-player games, standings sidebar, turn banner, winner screen.
+- Online via Firestore (`src/net.js`): one authoritative room doc per 4-char
+  code (collection `bowlingRooms`). Rolls commit through a transaction that
+  verifies turn + revision, so double submissions are rejected. The thrower's
+  simulated result is the score; remote clients replay the throw visually
+  (real physics, no local scoring) and snap the rack to the authoritative
+  standing set. 90s turn auto-skip (records a gutter). Rejoin by name keeps
+  your seat after a refresh. Host controls start / play again. Rooms
+  self-delete when the last player leaves.
+- Menu system: title screen with SOLO / LOCAL MULTIPLAYER / PLAY ONLINE,
+  player-count + name setup, room lobby with code display.
+- Input locking when it isn't your turn; aim guide hidden; turn banner with
+  auto-skip countdown.
+- Firebase rules are currently open (test mode) — the project owner should add
+  scoped rules (see README note).
+
+Tests (all headless, no browser):
+- match.test.mjs: 24/24 — turn logic incl. 10th frame edge cases, room state
+  transitions, full 3-player hot-seat match with real physics.
+- online.test.mjs: 15/15 against the REAL Firestore — create/join/start,
+  non-host start rejected, rogue double-submit rejected without corruption,
+  full 24-roll match to completion + winner, play-again to lobby, rejoin by
+  name, leave/delete cleanup.
+- physics 11/11, scoring 32/32 — no regressions.
