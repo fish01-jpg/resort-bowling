@@ -8,6 +8,9 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { PhoneClient } from './rtc.js';
+import {
+  quatFromEuler, quatConj, quatMul, relativeRotation, extractAngles, DEG,
+} from './orientation.js';
 
 const FIREBASE_CONFIG = {
   apiKey: 'AIzaSyBDYH16UPlCBIarBorBAMiyc7Mbn6_v9cw',
@@ -82,7 +85,12 @@ async function connect(codeOrToken) {
 
 // QR auto-pair: ?pair=TOKEN in the URL
 const params = new URLSearchParams(location.search);
-if (params.has('pair')) connect(params.get('pair'));
+if (params.has('pair')) {
+  connect(params.get('pair')).catch((e) => {
+    pairErr.textContent = e.message || 'Could not pair from the QR code.';
+    pairBtn.disabled = false;
+  });
+}
 
 // ------------------------------ motion permission -------------------------
 async function requestMotion() {
@@ -114,71 +122,68 @@ enableBtn.addEventListener('click', async () => {
 });
 
 // ------------------------------ sensor math -------------------------------
-// Calibrated, screen-rotation-robust orientation via quaternions.
-// rel = qCalib^-1 * qNow; roll (device z) steers position, yaw (y) steers aim.
-const DEG = Math.PI / 180;
-let qCal = null;               // calibration quaternion (or null until set)
-let roll = 0, yaw = 0;         // current relative angles, radians
-let seq = 0;
+// Calibrated relative orientation: rel = qCalib^-1 * qNow, decomposed into
+//   steer (wheel tilt -> ball position) and aim (turn -> aim direction).
+// See orientation.js (unit-tested in Node) for the extraction and signs.
 
-function quatFromEuler(alpha, beta, gamma) {
-  // W3C deviceorientation: intrinsic ZXY rotation -> quaternion.
-  // q = qz(alpha) * qx(beta) * qy(gamma), angles in degrees.
-  const a = alpha * DEG / 2, b = beta * DEG / 2, g = gamma * DEG / 2;
-  const c1 = Math.cos(a), s1 = Math.sin(a);
-  const c2 = Math.cos(b), s2 = Math.sin(b);
-  const c3 = Math.cos(g), s3 = Math.sin(g);
-  return {
-    w: c1 * c2 * c3 - s1 * s2 * s3,
-    x: c1 * s2 * c3 - s1 * c2 * s3,
-    y: c1 * c2 * s3 + s1 * s2 * c3,
-    z: c1 * s2 * s3 + s1 * c2 * c3,
-  };
-}
-function quatConj(q) { return { w: q.w, x: -q.x, y: -q.y, z: -q.z }; }
-function quatMul(a, b) {
-  return {
-    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-  };
-}
-function apply(q, v) { // rotate vector v by quaternion q
-  const { w, x, y, z } = q;
-  const tx = 2 * (y * v[2] - z * v[1]);
-  const ty = 2 * (z * v[0] - x * v[2]);
-  const tz = 2 * (x * v[1] - y * v[0]);
-  return [
-    v[0] + w * tx + (y * tz - z * ty),
-    v[1] + w * ty + (z * tx - x * tz),
-    v[2] + w * tz + (x * ty - y * tx),
-  ];
+let qNow = null;         // latest orientation quaternion (or null)
+let qCal = null;         // calibration quaternion (or null until set)
+let angles = { aim: 0, steer: 0 }; // latest extracted angles, radians
+
+// stable-calibration state: collect samples, require low spread
+let calSamples = [];     // [quaternion, ...]
+let calDeadline = 0;
+const CAL_NEED = 8;      // samples
+const CAL_WINDOW_MS = 1500;
+
+function quatAngleBetween(a, b) {
+  const d = Math.abs(quatMul(a, quatConj(b)).w);
+  return 2 * Math.acos(Math.min(1, Math.max(-1, d)));
 }
 
 function onOrient(e) {
   if (e.alpha == null) return;
-  const q = quatFromEuler(e.alpha, e.beta, e.gamma);
-  if (!qCal) qCal = q; // auto-calibrate on first sample
-  const rel = quatMul(quatConj(qCal), q);
-  // device z-axis (screen normal) in calibrated frame -> roll/steer
-  const z = apply(rel, [0, 0, 1]);
-  const y = apply(rel, [0, 1, 0]);
-  roll = Math.atan2(z[0], z[2]);   // left/right tilt of screen normal
-  yaw = Math.atan2(y[0], y[2]);    // left/right twist of device y-axis
+  qNow = quatFromEuler(e.alpha, e.beta, e.gamma);
+  if (!qCal) qCal = qNow; // auto-calibrate on first sample
+  if (calSamples.length) calSamples.push(qNow); // RECENTER in progress
+
+  const rel = relativeRotation(qCal, qNow);
+  angles = extractAngles(rel);
+
   // visual
-  tilt.style.transform = `translate(${(roll / MAX_ROLL) * 130}%, ${(yaw / MAX_YAW) * 130}%)`;
-  tiltBg.style.opacity = String(Math.min(1, Math.abs(roll / MAX_ROLL) + Math.abs(yaw / MAX_YAW) / 2));
+  tilt.style.transform = `translate(${(angles.steer / MAX_STEER) * 130}%, ${(angles.aim / MAX_AIM) * 130}%)`;
+  tiltBg.style.opacity = String(Math.min(1, Math.abs(angles.steer / MAX_STEER) + Math.abs(angles.aim / MAX_AIM) / 2));
 }
 
+/**
+ * Recalibrate: require a stable pose (samples must stay within a few degrees
+ * of the first) before accepting the new neutral. Falls back to the last
+ * sample if the window expires.
+ */
 function calibrate() {
-  qCal = null; // next sample re-zeroes
-  client && client.sendCtl({ t: 'cal' });
+  calSamples = [qNow].filter(Boolean);
+  calDeadline = Date.now() + CAL_WINDOW_MS;
   setStatus('warn', 'Calibrating — hold phone neutral');
 }
 
-const MAX_ROLL = 0.35; // radians of tilt for full lane travel
-const MAX_YAW = 0.45;
+function calTick() {
+  if (!calSamples.length) return;
+  if (calSamples.length < CAL_NEED && Date.now() < calDeadline) return; // keep collecting
+  const first = calSamples[0];
+  let stable = true;
+  for (const q of calSamples) {
+    if (quatAngleBetween(q, first) > 5 * Math.PI / 180) { stable = false; break; }
+  }
+  if (!stable && Date.now() < calDeadline) return; // wait for steadier hand
+  qCal = calSamples[calSamples.length - 1]; // accept the newest sample
+  calSamples = [];
+  angles = { aim: 0, steer: 0 };
+  client && client.sendCtl({ t: 'cal' });
+  setStatus('ok', 'Calibrated');
+}
+
+const MAX_STEER = 0.35; // radians of wheel tilt for full lane travel
+const MAX_AIM = 0.45;   // radians of turn for full aim
 
 // ------------------------------ swing detection --------------------------
 // devicemotion-based state machine: idle -> swinging -> released.
@@ -190,6 +195,7 @@ const MAX_PEAK = 20;     // m/s^2 deviation mapped to power 1.0
 
 let swinging = false, swingStart = 0, swingPeak = 0, spinAccum = 0;
 
+let lastMotionTs = 0;
 function onMotion(e) {
   const acc = e.accelerationIncludingGravity;
   const rot = e.rotationRate;
@@ -197,10 +203,12 @@ function onMotion(e) {
   const mag = Math.hypot(acc.x, acc.y, acc.z);
   const dev = Math.abs(mag - 9.81);
   const now = performance.now();
+  const dt = lastMotionTs ? Math.min(0.1, (now - lastMotionTs) / 1000) : 0;
+  lastMotionTs = now;
 
   if (swinging) {
     swingPeak = Math.max(swingPeak, dev);
-    if (rot && rot.alpha != null) spinAccum += (rot.alpha * DEG) * (1 / 30); // ~30Hz
+    if (rot && rot.alpha != null) spinAccum += (rot.alpha * DEG) * dt; // real dt
     if (dev < SWING_OFF && now - swingStart > MIN_SWING_MS) {
       // release
       const power = clamp((swingPeak - SWING_ON) / (MAX_PEAK - SWING_ON), 0.15, 1);
@@ -223,7 +231,12 @@ let lastThrowAt = 0;
 function sendThrow(power, spin) {
   if (!client || !client.connected) return;
   lastThrowAt = performance.now();
-  client.sendCtl({ t: 'throw', id: Math.random().toString(36).slice(2), power, spin });
+  // snapshot the release orientation together with power/spin so the host
+  // maps the throw atomically instead of racing the 30Hz tilt stream
+  client.sendCtl({
+    t: 'throw', id: Math.random().toString(36).slice(2), power, spin,
+    steer: angles.steer, aim: angles.aim,
+  });
   setStatus('ok', 'Thrown');
   setTimeout(() => setStatus('ok', 'Connected'), 900);
 }
@@ -261,8 +274,9 @@ function tick() {
   const now = performance.now();
   if (client && client.connected && now - lastSent >= 33) {
     lastSent = now;
-    client.sendState(++seq, clamp(roll, -MAX_ROLL, MAX_ROLL), clamp(yaw, -MAX_YAW, MAX_YAW));
+    client.sendState(++seq, clamp(angles.steer, -MAX_STEER, MAX_STEER), clamp(angles.aim, -MAX_AIM, MAX_AIM));
   }
+  calTick();
   requestAnimationFrame(tick);
 }
 

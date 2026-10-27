@@ -100,12 +100,15 @@ export class BowlingGame {
   _throw(controls) {
     if (this.phase !== 'ready') return;
     this._lastThrowParams = { ...controls };
+    // capture the room revision AT THROW TIME — the settle path submits
+    // against this, not whatever revision happens to be current at settle
+    if (this.net) this._throwRevision = this.net.revision;
     this.physics.throwBall({
       position: controls.position,
       aim: controls.aim,
       power: Math.max(0.12, controls.power),
       spin: controls.spin,
-    });
+    }, { scatter: !this._replaying });
     this.standingBefore = this._countStanding();
     this.phase = 'rolling';
     this._settleTimer = 0;
@@ -129,7 +132,11 @@ export class BowlingGame {
     this._replayRack = standingAfter;
     this._replayKnocked = knocked;
     this._replayLabel = label;
+    // params are the ALREADY-scattered launch (physics.lastLaunch) — do not
+    // apply the high-power perturbation a second time
+    this._replaying = true;
     this._throw({ ...params });
+    this._replaying = false;
     return true;
   }
 
@@ -246,7 +253,7 @@ export class BowlingGame {
         params: this.physics.lastLaunch || this._lastThrowParams,
         knocked,
         standingAfter,
-        expectedRevision: this.net.revision,
+        expectedRevision: this._throwRevision != null ? this._throwRevision : this.net.revision,
       });
       if (submitted && submitted.catch) {
         submitted.catch(() => {

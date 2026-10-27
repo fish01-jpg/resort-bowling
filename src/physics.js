@@ -126,12 +126,14 @@ export class Physics {
     }
   }
 
-  throwBall({ position = 0, aim = 0, power = 0.7, spin = 0 }) {
+  throwBall({ position = 0, aim = 0, power = 0.7, spin = 0 }, { scatter = true } = {}) {
     const speed = TUNING.minSpeed + power * (TUNING.maxSpeed - TUNING.minSpeed);
     // High-speed scatter: one bounded, speed-scaled release perturbation.
     // Seeded per throw; the ACTUAL (post-scatter) launch is kept in
     // lastLaunch so online replays reproduce the real trajectory.
-    if (speed > TUNING.wobbleSpeed) {
+    // Replays pass the ALREADY-scattered lastLaunch with scatter:false —
+    // otherwise the replay would apply a second random perturbation.
+    if (scatter && speed > TUNING.wobbleSpeed) {
       const k = Math.min(1, (speed - TUNING.wobbleSpeed) / (TUNING.maxSpeed - TUNING.wobbleSpeed));
       position += (Math.random() * 2 - 1) * TUNING.wobbleMaxPos * k;
       aim += (Math.random() * 2 - 1) * TUNING.wobbleMaxAim * k;

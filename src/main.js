@@ -60,7 +60,12 @@ async function boot() {
 
   // if our online submission fails, release the pending-result lock so the
   // player isn't frozen until the turn timeout
-  game.onNetSubmitFailed = () => { revisionAtThrow = -1; };
+  game.onNetSubmitFailed = () => {
+    // release the pending lock AND force re-adoption of the room's rack —
+    // the local simulation has knocked pins the room never recorded
+    revisionAtThrow = -1;
+    lastAppliedRevision = -1; // onlineTick will re-adopt the authoritative rack
+  };
 
   // phone controller (gyro Wii-style)
   let phoneHost = null;
@@ -329,19 +334,24 @@ async function boot() {
   function onPhoneState(m) {
     if (game.phase !== 'ready' || !input.enabled) return;
     if (phoneNeedsRearm) {
-      if (Math.abs(m.roll) < 0.12 && Math.abs(m.yaw) < 0.15) phoneNeedsRearm = false;
+      if (Math.abs(m.steer) < 0.12 && Math.abs(m.aim) < 0.15) phoneNeedsRearm = false;
       else return; // hold the release pose until the phone comes back to neutral
     }
-    input.controls.position = clamp01(m.roll / 0.35, -1, 1) * TUNING.maxPosition;
-    input.controls.aim = clamp01(m.yaw / 0.45, -1, 1) * TUNING.maxAim;
+    input.controls.position = clamp01(m.steer / 0.35, -1, 1) * TUNING.maxPosition;
+    input.controls.aim = clamp01(m.aim / 0.45, -1, 1) * TUNING.maxAim;
   }
 
   /** Swing release (or THROW button) from the phone. */
   function onPhoneThrow(m) {
     if (game.phase !== 'ready' || !input.enabled) return;
+    if (phoneNeedsRearm) return; // phone hasn't returned to neutral since the last throw
+    // use the orientation captured AT RELEASE (carried by the throw packet),
+    // not whichever 30Hz tilt sample happened to arrive last
+    const position = clamp01(m.steer / 0.35, -1, 1) * TUNING.maxPosition;
+    const aim = clamp01(m.aim / 0.45, -1, 1) * TUNING.maxAim;
     const power = clamp01(m.power, 0.12, 1);
     const spin = clamp01(m.spin, -1, 1);
-    game._throw({ position: input.controls.position, aim: input.controls.aim, power, spin });
+    game._throw({ position, aim, power, spin });
     phoneNeedsRearm = true; // tilt steering pauses until back near neutral
     broadcastPhonePhase();
   }
@@ -349,7 +359,7 @@ async function boot() {
   /** Tell the phone whether swinging will throw right now. */
   function broadcastPhonePhase() {
     if (!phoneHost || !phoneHost.connected) return;
-    const canThrow = game.phase === 'ready' && input.enabled;
+    const canThrow = game.phase === 'ready' && input.enabled && !phoneNeedsRearm;
     const key = `${game.phase}|${canThrow ? 1 : 0}`;
     if (key === lastPhonePhaseKey) return;
     lastPhonePhaseKey = key;
@@ -372,6 +382,7 @@ async function boot() {
 
   async function startPhonePairing() {
     ui.showMenu('phone');
+    ui.el.phoneDone.classList.add('hidden');
     ui.el.phoneStatus.textContent = 'Starting…';
     if (!phoneHost) {
       phoneHost = new PhoneHost({
@@ -381,6 +392,7 @@ async function boot() {
           if (kind === 'waiting') ui.el.phoneStatus.textContent = 'Waiting for your phone…';
           else if (kind === 'connected') {
             ui.el.phoneStatus.textContent = 'Connected — tilt to aim';
+            ui.el.phoneDone.classList.remove('hidden');
             lastPhonePhaseKey = ''; // resend the current phase to the phone
             broadcastPhonePhase();
           }
@@ -469,9 +481,15 @@ async function boot() {
   ui.el.menuMain.querySelector('#btn-phone').addEventListener('click', () => {
     audio.init(); audio.click(); startPhonePairing();
   });
+  ui.el.menuPhone.querySelector('#btn-phone-done').addEventListener('click', () => {
+    audio.init(); audio.click();
+    ui.el.phoneDone.classList.add('hidden');
+    ui.showMenu('main'); // connection stays live; pick a mode and bowl
+  });
   ui.el.menuPhone.querySelector('#btn-phone-back').addEventListener('click', () => {
     audio.click();
     if (phoneHost) { phoneHost.close(); phoneHost = null; }
+    ui.el.phoneDone.classList.add('hidden');
     ui.showMenu('main');
   });
 

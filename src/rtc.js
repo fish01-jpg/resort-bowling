@@ -112,7 +112,6 @@ export class PhoneHost {
 
     this.pc.addEventListener('connectionstatechange', () => {
       const st = this.pc.connectionState;
-      if (st === 'connected') { this.connected = true; this.onStatus('connected'); this._startPing(); }
       if (st === 'failed' || st === 'disconnected' || st === 'closed') {
         this.connected = false;
         this.onStatus(st === 'failed' ? 'error' : 'disconnected');
@@ -150,6 +149,14 @@ export class PhoneHost {
   }
 
   _wireChannels() {
+    // "connected" only counts once the RELIABLE channel is actually open —
+    // connectionState 'connected' does not guarantee that, and phase
+    // messages sent before open are silently dropped.
+    this.ctlCh.addEventListener('open', () => {
+      this.connected = true;
+      this.onStatus('connected');
+      this._startPing();
+    });
     this.stateCh.addEventListener('message', (ev) => {
       try {
         const m = JSON.parse(ev.data);
@@ -282,6 +289,11 @@ export class PhoneClient {
         this._stateCh = ch; // unreliable channel for orientation samples
       } else if (ch.label === 'ctl') {
         this.ctlCh = ch;
+        ch.addEventListener('open', () => {
+          this.connected = true;
+          this.onStatus('connected');
+          this.onOpen();
+        });
         ch.addEventListener('message', (e) => {
           let m; try { m = JSON.parse(e.data); } catch { return; }
           if (m.t === 'ping' && m.ts) {
@@ -294,7 +306,6 @@ export class PhoneClient {
     });
     this.pc.addEventListener('connectionstatechange', () => {
       const st = this.pc.connectionState;
-      if (st === 'connected') { this.connected = true; this.onStatus('connected'); this.onOpen(); }
       if (st === 'failed' || st === 'disconnected' || st === 'closed') {
         this.connected = false;
         this.onStatus(st === 'failed' ? 'error' : 'disconnected');

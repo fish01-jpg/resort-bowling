@@ -35,6 +35,7 @@ export class UI {
       phoneQr: document.getElementById('phone-qr'),
       phoneCode: document.getElementById('phone-code'),
       phoneStatus: document.getElementById('phone-status'),
+      phoneDone: document.getElementById('btn-phone-done'),
       localNames: document.getElementById('local-names'),
       onlineName: document.getElementById('online-name'),
       joinCode: document.getElementById('join-code'),

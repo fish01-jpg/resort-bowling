@@ -190,3 +190,37 @@ mass + energy loss through rack), revision.test.mjs 4/4 (real Firestore:
 stale duplicate rejected, revision unchanged), online 15/15, match 24/24,
 physics 11/11, scoring 32/32 — no regressions. Gyro/WebRTC/latency behavior
 on real devices is left for user testing.
+
+## Session 4b — review fixes (orientation math, channel readiness, replay scatter)
+
+- New `src/orientation.js`: pure, Node-testable orientation math. Angles are
+  extracted from the RELATIVE rotation matrix (Euler extraction) instead of
+  projecting axis vectors — the old yaw extraction was degenerate at the
+  neutral pose (atan2(0,0) jump saturating aim). Convention documented and
+  unit-tested: aim = rotation about calibrated y (turn phone right = aim
+  right), steer = wheel tilt about calibrated z (tilt right = ball right,
+  sign-flipped). Works from any calibration grip (tested from a tilted grip).
+- phone-main: stable RECENTER (8 samples within 5 degrees, 1.5s window),
+  spin integrated with real devicemotion dt, throw packets carry the
+  release-orientation snapshot (host maps throws atomically instead of
+  racing the 30Hz tilt stream), QR auto-pair errors surfaced.
+- rtc: "connected" now fires from the reliable ctl channel OPEN event (not
+  connectionState) so the initial phase message is never dropped.
+- Host: throws are gated on re-arm (phone back near neutral) and canThrow
+  reflects it; pairing screen got a DONE button that keeps the connection
+  and returns to the mode menu (Back disconnects).
+- Replay of a high-power throw no longer applies scatter twice: throwBall
+  takes { scatter } opt-out; game passes the already-scattered lastLaunch
+  through unchanged (verified launch-identical in test).
+- Online revision is captured AT THROW TIME (not settle) so the submit
+  verifies against the revision that belonged to that delivery; a failed
+  submission now releases the pending lock AND forces re-adoption of the
+  room's authoritative rack (knocked pins are restored, player re-throws).
+- revision.test.mjs rewritten: non-strike first roll keeps the same player
+  up, duplicate with stale expectedRevision rejected by the revision guard
+  itself ("Stale turn — already submitted"); no process.exit inside finally.
+
+Tests: orientation 24/24 (signs, tilted grip, wraparound, no neutral jump),
+controls 15/15 (incl. replay no-double-scatter), revision 6/6 (real
+Firestore), online 15/15, match 24/24, physics 11/11, scoring 32/32,
+fullgame sim OK.
