@@ -61,3 +61,23 @@ Discriminating checks: untouched settled rack stays 10 standing; centered zero-s
 - Straight center ball at ~0.5 power strikes reliably — consider making pins slightly heavier (density 310 → 340) if too easy.
 - The debug FPS overlay shows low FPS under headless SwiftShader; real browsers render fine.
 - GitHub Pages site: repo must be public (free plan) — pending user confirmation.
+
+## Fix 3 — root cause of "always strike" + "pins stuck" (2026-10-27)
+
+- Symptom: every roll scored a strike; pins seemed stuck/frozen; ball rolled off mid-lane.
+- Root cause: `col.setTranslation()` called AFTER collider creation is silently ignored
+  by the Rapier build — it updates the reported position but the collision shape stays at
+  the parent body origin. The lane collider therefore actually spanned z -11.1..+11.1
+  with its top at y=+0.05 (at the origin), so:
+  - the pin rack (z 18.3+) had NO floor under it -> all 10 pins free-fell -> every pin
+    counted as knocked -> every roll = strike (and respotted pins fell again, looking "stuck")
+  - the ball rolled off the lane surface at z=11.1 ("rolls off the lane")
+- Fix: set translations on the ColliderDesc (`desc.setTranslation(x, y, z)`) before
+  `createCollider` — this is the supported path and works.
+- Verified with a headless Node harness (no browser): 11/11 physics tests
+  (rack stability, gutter scores 0, center hit leaves pins, pocket-hit strike rate,
+  pins settle on the deck, lane-exists-under-rack regression test), 32/32 scoring
+  tests, and 3 full simulated games (totals 87-132, 0-2 strikes — realistic).
+- Tuning data from the harness: dead-center straight ball -> 6 pins, 0 strikes
+  (leaves splits, realistic); pocket throw with hook -> 8-10 pins, ~50% strikes when
+  well-centered, ~15-20% with human jitter. Aim/position actually matter now.

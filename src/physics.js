@@ -23,8 +23,9 @@ export class Physics {
     const fixed = () => RAPIER.RigidBodyDesc.fixed();
     const add = (desc, x, y, z, friction = 0.3, restitution = 0.05) => {
       const body = W.createRigidBody(fixed());
-      const col = W.createCollider(desc, body);
-      col.setTranslation({ x, y, z });
+      // NOTE: post-creation col.setTranslation() is silently ignored by the
+      // engine — the translation MUST go on the ColliderDesc to take effect.
+      const col = W.createCollider(desc.setTranslation(x, y, z), body);
       col.setFriction(friction);
       col.setRestitution(restitution);
       return col;
