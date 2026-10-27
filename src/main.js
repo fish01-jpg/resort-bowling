@@ -67,10 +67,16 @@ async function boot() {
     lastAppliedRevision = -1; // onlineTick will re-adopt the authoritative rack
   };
 
-  // phone controller (gyro Wii-style)
-  let phoneHost = null;
-  let phoneNeedsRearm = false;
-  let lastPhonePhaseKey = '';
+  // phone controllers (gyro Wii-style) — up to 4 slots, one phone each
+  let phoneHub = null;
+  let phoneCount = 1;        // how many phones the user selected (1..4)
+  const phoneRearm = new Map(); // slot -> Date.now() when the re-arm lock was set
+  const phonePhaseKeys = new Map(); // slot -> last phase key sent to that phone
+  let phonePairingBusy = false;
+  let phonePairPending = false;  // a pairing request arrived while busy — defer it
+  let pairedSlotShown = -1;      // slot whose code/QR is on screen right now
+  let aimReadyAt = 0;            // when the current aiming phase began
+  const REARM_AUTO_RELEASE_MS = 3000; // re-arm lock clears itself after this
 
   // camera state
   const camPos = new THREE.Vector3(0, 1.5, -3.2);
@@ -144,6 +150,7 @@ async function boot() {
     ui.el.finalStandings.classList.add('hidden');
     ui.el.playAgain.textContent = 'PLAY AGAIN';
     ui.setTurnBanner('');
+    clearPhoneTurnState(); // fresh match: no stale re-arm locks or phase keys
   }
 
   function startSolo() {
@@ -197,6 +204,7 @@ async function boot() {
       lastReplayedSeq = -1;
       skipFiredRevision = -1;
       game.phase = 'ready';
+      clearPhoneTurnState();
       return;
     }
     if (room.status === 'done') {
@@ -326,25 +334,77 @@ async function boot() {
     }
   }
 
-  // ---------------- phone controller ----------------
+  // ---------------- phone controllers (multi-phone) ----------------
 
   const clamp01 = (v, a, b) => Math.max(a, Math.min(b, v));
 
+  /**
+   * Which player a phone slot controls (local hot-seat):
+   * - With MULTIPLE phones live and the active bowler within the phone count,
+   *   phone k+1 is bowler k+1 (dedicated). Extra phones beyond the roster —
+   *   and any phone when the active bowler has NO dedicated phone (e.g. 2
+   *   phones, 4 bowlers) — share the active bowler, so no turn is uncontrollable.
+   * - With a SINGLE phone live it controls whoever is up (pass-the-phone).
+   * - Solo / online: every phone controls the local bowler.
+   */
+  function slotControlsActivePlayer(slot) {
+    if (!match) return true;
+    const live = phoneHub ? phoneHub.connectedSlots().length : 0;
+    if (slot < match.players.length && match.activeIdx < live) {
+      return slot === match.activeIdx; // dedicated slot, dedicated bowler
+    }
+    return true; // shared / pass-the-phone / beyond-roster
+  }
+
+  /** Online: is it the local player's turn in the room? */
+  function onlineMyTurn() {
+    if (!net || !currentRoom || currentRoom.status !== 'playing') return !net; // no room: not blocking
+    return !!(currentRoom.turn && currentRoom.turn.uid === net.uid);
+  }
+
+  /** Can this phone throw right now? */
+  function canThrowForSlot(slot) {
+    if (game.phase !== 'ready' || !input.enabled) return false;
+    if (phoneRearm.has(slot)) return false;
+    if (net && !onlineMyTurn()) return false;
+    return slotControlsActivePlayer(slot);
+  }
+
+  /** Human-readable reason this phone is waiting (or null). */
+  function phoneWaitText(slot) {
+    if (game.phase === 'gameover') return 'Game over — results on the big screen';
+    if (game.phase !== 'ready') return 'Ball in play…';
+    if (match && !slotControlsActivePlayer(slot)) {
+      const p = match.players[match.activeIdx];
+      return `Waiting for your turn — ${p ? p.name : 'another bowler'} is up`;
+    }
+    if (net && currentRoom && currentRoom.status === 'playing' && !onlineMyTurn()) {
+      const holder = (currentRoom.players || []).find(
+        (p) => p.uid === (currentRoom.turn && currentRoom.turn.uid)
+      );
+      return `Waiting for your turn — ${holder ? holder.name : 'another bowler'} is up`;
+    }
+    if (phoneRearm.has(slot)) return 'Return the phone upright to aim again';
+    if (!input.enabled) return 'Start a game on the big screen';
+    return null;
+  }
+
   /** Phone tilt -> ball position / aim (only while aiming; re-arms at neutral). */
-  function onPhoneState(m) {
+  function onPhoneState(slot, m) {
     if (game.phase !== 'ready' || !input.enabled) return;
-    if (phoneNeedsRearm) {
-      if (Math.abs(m.steer) < 0.12 && Math.abs(m.aim) < 0.15) phoneNeedsRearm = false;
+    if (!slotControlsActivePlayer(slot)) return; // not this phone's bowler
+    if (net && !onlineMyTurn()) return;
+    if (phoneRearm.has(slot)) {
+      if (Math.abs(m.steer) < 0.12 && Math.abs(m.aim) < 0.15) phoneRearm.delete(slot);
       else return; // hold the release pose until the phone comes back to neutral
     }
     input.controls.position = clamp01(m.steer / 0.35, -1, 1) * TUNING.maxPosition;
     input.controls.aim = clamp01(m.aim / 0.45, -1, 1) * TUNING.maxAim;
   }
 
-  /** Swing release (or THROW button) from the phone. */
-  function onPhoneThrow(m) {
-    if (game.phase !== 'ready' || !input.enabled) return;
-    if (phoneNeedsRearm) return; // phone hasn't returned to neutral since the last throw
+  /** Swing release (or THROW button) from a phone. */
+  function onPhoneThrow(slot, m) {
+    if (!canThrowForSlot(slot)) return;
     // use the orientation captured AT RELEASE (carried by the throw packet),
     // not whichever 30Hz tilt sample happened to arrive last
     const position = clamp01(m.steer / 0.35, -1, 1) * TUNING.maxPosition;
@@ -352,18 +412,51 @@ async function boot() {
     const power = clamp01(m.power, 0.12, 1);
     const spin = clamp01(m.spin, -1, 1);
     game._throw({ position, aim, power, spin });
-    phoneNeedsRearm = true; // tilt steering pauses until back near neutral
+    phoneRearm.set(slot, Date.now()); // tilt steering pauses until back near neutral
     broadcastPhonePhase();
   }
 
-  /** Tell the phone whether swinging will throw right now. */
+  /**
+   * Tell every phone whether swinging will throw right now — per slot, since
+   * only the active bowler's phone(s) may act in hot-seat/online modes.
+   */
   function broadcastPhonePhase() {
-    if (!phoneHost || !phoneHost.connected) return;
-    const canThrow = game.phase === 'ready' && input.enabled && !phoneNeedsRearm;
-    const key = `${game.phase}|${canThrow ? 1 : 0}`;
-    if (key === lastPhonePhaseKey) return;
-    lastPhonePhaseKey = key;
-    phoneHost.sendCtl({ t: 'phase', phase: game.phase, canThrow });
+    if (!phoneHub) return;
+    const connected = phoneHub.connectedSlots();
+    if (!connected.length) return;
+    for (const slot of connected) {
+      const canThrow = canThrowForSlot(slot);
+      const waitText = phoneWaitText(slot);
+      const key = `${game.phase}|${canThrow ? 1 : 0}|${waitText || ''}|${connected.length}`;
+      if (phonePhaseKeys.get(slot) === key) continue;
+      phonePhaseKeys.set(slot, key);
+      phoneHub.sendCtlSlot(slot, {
+        t: 'phase', phase: game.phase, canThrow,
+        slot: slot + 1, phones: connected.length,
+        waitText,
+      });
+    }
+  }
+
+  /**
+   * Re-arm lock safety valve: if a phone never returns to neutral, the lock
+   * would keep it stuck on "waiting" forever (the reported one-phone bug).
+   * The grace period starts when the AIMING phase begins (not at throw time —
+   * a normal roll already takes several seconds), so the lock holds for a few
+   * seconds of aiming and then auto-releases.
+   */
+  function tickPhoneRearm() {
+    if (!phoneRearm.size) return;
+    if (game.phase !== 'ready' || !input.enabled) return; // mid-roll: wait
+    if (Date.now() - aimReadyAt > REARM_AUTO_RELEASE_MS) {
+      for (const slot of phoneRearm.keys()) phoneRearm.delete(slot);
+    }
+  }
+
+  function clearPhoneTurnState() {
+    phoneRearm.clear();
+    phonePhaseKeys.clear();
+    broadcastPhonePhase();
   }
 
   async function renderPhoneQr(text) {
@@ -381,46 +474,142 @@ async function boot() {
   }
 
   function updatePhoneNotes() {
-    const connected = !!(phoneHost && phoneHost.connected);
+    const connectedSlots = phoneHub ? phoneHub.connectedSlots() : [];
+    const connected = connectedSlots.length > 0;
+    const n = connectedSlots.length;
+    ui.el.phoneMenuNote.textContent = n > 1 ? `PHONE CONTROLLERS CONNECTED (${n})` : 'PHONE CONTROLLER CONNECTED';
     ui.el.phoneMenuNote.classList.toggle('hidden', !connected);
+    ui.el.phoneConnectedNote.textContent = n > 1
+      ? `${n} phone controllers connected — pick a mode and bowl`
+      : 'Phone controller connected — pick a mode and bowl';
     ui.el.phoneConnectedNote.classList.toggle('hidden', !connected);
-    ui.el.phonePairRow.classList.toggle('hidden', !connected);
+    ui.el.phonePairRow.classList.toggle('hidden', !phoneHub);
+    renderPhoneSlots();
   }
 
+  /** Per-slot status chips in the pairing menu (tap a chip to re-pair it). */
+  function renderPhoneSlots() {
+    const wrap = ui.el.phoneSlots;
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    if (!phoneHub) return;
+    const connectedSlots = phoneHub.connectedSlots();
+    for (let slot = 0; slot < phoneCount; slot++) {
+      const btn = document.createElement('button');
+      const isConnected = connectedSlots.includes(slot);
+      btn.className = 'slot-chip' + (isConnected ? ' ok' : '');
+      btn.type = 'button';
+      btn.title = isConnected ? 'Phone ' + (slot + 1) + ' connected' : 'Tap to (re)pair phone ' + (slot + 1);
+      btn.textContent = isConnected
+        ? `P${slot + 1} ✓`
+        : `P${slot + 1} pair`;
+      btn.addEventListener('click', () => {
+        if (isConnected) return;
+        audio.click();
+        pairPhoneSlot(slot);
+      });
+      wrap.appendChild(btn);
+    }
+  }
+
+  /** First slot below the phone count with NO session at all (0-based, -1 if none). */
+  function nextEmptyPhoneSlot() {
+    if (!phoneHub) return 0;
+    const taken = new Set(phoneHub.sessions.map((s) => s.slot));
+    for (let s = 0; s < phoneCount; s++) {
+      if (!taken.has(s)) return s;
+    }
+    return -1;
+  }
+
+  /** Pair the given slot (defers if another pairing is in flight). */
+  async function pairPhoneSlot(slot) {
+    if (!phoneHub) makePhoneHub();
+    if (phonePairingBusy) { phonePairPending = true; return; }
+    const hub = phoneHub;
+    phonePairingBusy = true;
+    ui.el.phoneStatus.textContent = 'Starting…';
+    updatePhoneNotes();
+    try {
+      const base = new URL('phone.html', location.href).href;
+      const res = await hub.startPairing(base, slot);
+      if (phoneHub !== hub || res.cancelled || slot >= phoneCount) return;
+      pairedSlotShown = slot;
+      ui.el.phoneCode.textContent = res.code;
+      await renderPhoneQr(res.url);
+      // the slot may have been closed while the QR rendered
+      if (phoneHub !== hub || !hub.sessions.some((s) => s.slot === slot)) return;
+      const done = hub.connectedSlots().length;
+      ui.el.phoneStatus.textContent = phoneCount > 1
+        ? `Scan the QR with phone ${slot + 1} — ${done}/${phoneCount} connected`
+        : 'Scan the QR (or open this site on your phone and enter the code)';
+    } catch (e) {
+      if (phoneHub === hub) {
+        ui.el.phoneStatus.textContent = 'Could not start pairing: ' + (e.message || e);
+      }
+    } finally {
+      phonePairingBusy = false;
+      updatePhoneNotes();
+      // a request arrived while we were busy — run it now, but only if this
+      // hub is still the active one (Disconnect/Back may have closed it)
+      if (phonePairPending && phoneHub === hub) {
+        phonePairPending = false;
+        const target = nextEmptyPhoneSlot();
+        if (target >= 0) pairPhoneSlot(target);
+      }
+    }
+  }
+
+  /** Hide the on-screen code/QR when the slot it belongs to is gone. */
+  function maybeClearPairingDisplay() {
+    const sessionSlots = phoneHub ? phoneHub.sessions.map((s) => s.slot) : [];
+    if (pairedSlotShown >= 0 && !sessionSlots.includes(pairedSlotShown)) {
+      pairedSlotShown = -1;
+      ui.el.phoneCode.textContent = '----';
+      ui.el.phoneQr.classList.add('hidden');
+    }
+  }
+
+  /** Begin pairing: fills the first empty slot, then auto-advances. */
   async function startPhonePairing() {
     ui.showMenu('phone');
-    ui.el.phoneDone.classList.add('hidden');
-    ui.el.phonePairRow.classList.add('hidden');
+    ui.el.phoneDone.classList.toggle('hidden', !(phoneHub && phoneHub.connected));
     updatePhoneNotes();
-    ui.el.phoneStatus.textContent = 'Starting…';
-    if (!phoneHost) {
-      phoneHost = new PhoneHost({
-        onState: onPhoneState,
-        onThrow: onPhoneThrow,
-        onStatus: (kind, detail) => {
-          if (kind === 'waiting') ui.el.phoneStatus.textContent = 'Waiting for your phone…';
-          else if (kind === 'connected') {
-            ui.el.phoneStatus.textContent = 'Connected — the QR is no longer needed';
-            ui.el.phoneDone.classList.remove('hidden');
-            lastPhonePhaseKey = ''; // resend the current phase to the phone
-            broadcastPhonePhase();
+    if (!phoneHub) ui.el.phoneStatus.textContent = 'Pick how many phones, then pair';
+    const target = nextEmptyPhoneSlot();
+    if (target >= 0) await pairPhoneSlot(target);
+    else ui.el.phoneStatus.textContent = `All ${phoneCount} phone${phoneCount > 1 ? 's' : ''} connected`;
+  }
+
+  function makePhoneHub() {
+    const hub = new PhoneHost({
+      onState: onPhoneState,
+      onThrow: onPhoneThrow,
+      onStatus: (slot, kind, detail) => {
+        if (phoneHub !== hub) return; // stale hub (closed/replaced) — ignore
+        if (kind === 'waiting') {
+          ui.el.phoneStatus.textContent = `Waiting for phone ${slot + 1}…`;
+        } else if (kind === 'connected') {
+          const n = hub.connectedSlots().length;
+          ui.el.phoneStatus.textContent = `Phone ${slot + 1} connected${n > 1 ? ` (${n}/${phoneCount})` : ''} — the QR is no longer needed`;
+          ui.el.phoneDone.classList.remove('hidden');
+          phonePhaseKeys.delete(slot); // resend the current phase to this phone
+          broadcastPhonePhase();
+          // auto-advance: pair the next slot with no session at all
+          if (n < phoneCount) {
+            const next = nextEmptyPhoneSlot();
+            if (next >= 0) pairPhoneSlot(next);
           }
-          else if (kind === 'disconnected') ui.el.phoneStatus.textContent = 'Phone disconnected — re-pair to reconnect';
-          else if (kind === 'error') ui.el.phoneStatus.textContent = 'Error: ' + (detail || 'pairing failed');
-          updatePhoneNotes();
-        },
-        onLatency: (ms) => { /* status line above; keep for future HUD */ void ms; },
-      });
-    }
-    const base = new URL('phone.html', location.href).href;
-    try {
-      const { code, url } = await phoneHost.startPairing(base);
-      ui.el.phoneCode.textContent = code;
-      await renderPhoneQr(url);
-      ui.el.phoneStatus.textContent = 'Scan the QR (or open this site on your phone and enter the code)';
-    } catch (e) {
-      ui.el.phoneStatus.textContent = 'Could not start pairing: ' + (e.message || e);
-    }
+        } else if (kind === 'disconnected') {
+          ui.el.phoneStatus.textContent = `Phone ${slot + 1} disconnected — tap its chip to re-pair`;
+        } else if (kind === 'error') {
+          ui.el.phoneStatus.textContent = `Phone ${slot + 1} error: ` + (detail || 'pairing failed');
+        }
+        updatePhoneNotes();
+      },
+      onLatency: (slot, ms) => { /* status line above; keep for future HUD */ void slot; void ms; },
+    });
+    phoneHub = hub;
   }
 
   // ---------------- main loop ----------------
@@ -437,6 +626,10 @@ async function boot() {
     }
     _lastGamePhase = game.phase;
     game.fixedUpdate(FIXED_DT);
+    if (game.phase === 'ready' && _lastGamePhase !== 'ready') {
+      aimReadyAt = Date.now(); // fresh aiming phase: start the re-arm grace clock
+    }
+    tickPhoneRearm();
     broadcastPhonePhase();
   }
 
@@ -491,25 +684,57 @@ async function boot() {
   ui.el.menuMain.querySelector('#btn-phone').addEventListener('click', () => {
     audio.init(); audio.click(); startPhonePairing();
   });
+  // how many phones? 1-4 (data-phones on the buttons)
+  function selectPhoneCount(n) {
+    ui.el.menuPhone.querySelectorAll('#phone-count-row .count-btn').forEach((b) => {
+      b.classList.toggle('selected', Number(b.dataset.phones) === n);
+    });
+  }
+  selectPhoneCount(1);
+  ui.el.menuPhone.querySelectorAll('#phone-count-row .count-btn').forEach((b) => {
+    b.addEventListener('click', () => {
+      audio.click();
+      const n = Math.max(1, Math.min(4, Number(b.dataset.phones) || 1));
+      const prev = phoneCount;
+      phoneCount = n;
+      selectPhoneCount(n);
+      if (!phoneHub) { updatePhoneNotes(); return; } // pairing not started yet
+      if (n > prev) {
+        // more phones requested: pair the first slot with no session
+        const target = nextEmptyPhoneSlot();
+        if (target >= 0) pairPhoneSlot(target);
+      } else if (n < prev) {
+        // fewer phones: drop the extra slots (connected or not)
+        for (let s = n; s < prev; s++) phoneHub.closeSlot(s);
+        maybeClearPairingDisplay();
+        ui.el.phoneStatus.textContent = `Pairing ${n} phone${n > 1 ? 's' : ''}`;
+      }
+      updatePhoneNotes();
+    });
+  });
   ui.el.menuPhone.querySelector('#btn-phone-done').addEventListener('click', () => {
     audio.init(); audio.click();
     ui.el.phoneDone.classList.add('hidden');
-    ui.showMenu('main'); // connection stays live; pick a mode and bowl
+    ui.showMenu('main'); // connections stay live; pick a mode and bowl
     updatePhoneNotes();
   });
-  // Back HIDES the pairing screen — it only kicks the phone if pairing never
-  // completed. Disconnect is explicit and separate.
+  // Back HIDES the pairing screen — it only kicks the phones if pairing never
+  // completed for any of them. Disconnect is explicit and separate.
   ui.el.menuPhone.querySelector('#btn-phone-back').addEventListener('click', () => {
     audio.click();
-    if (phoneHost && !phoneHost.connected) { phoneHost.close(); phoneHost = null; }
+    phonePairPending = false; // don't let a queued request restart pairing
+    if (phoneHub && !phoneHub.connected) { phoneHub.close(); phoneHub = null; }
     ui.el.phoneDone.classList.add('hidden');
+    maybeClearPairingDisplay();
     ui.showMenu('main');
     updatePhoneNotes();
   });
   ui.el.phoneDisconnect.addEventListener('click', () => {
     audio.click();
-    if (phoneHost) { phoneHost.close(); phoneHost = null; }
+    phonePairPending = false; // don't let a queued request restart pairing
+    if (phoneHub) { phoneHub.close(); phoneHub = null; }
     ui.el.phoneDone.classList.add('hidden');
+    maybeClearPairingDisplay();
     ui.showMenu('main');
     updatePhoneNotes();
   });
@@ -577,6 +802,7 @@ async function boot() {
         startLocal(localNames);
       } else {
         ui.hideOverlay();
+        clearPhoneTurnState();
         game.start();
       }
     }
@@ -603,6 +829,7 @@ async function boot() {
       startLocal(localNames);
     } else {
       ui.hideOverlay();
+      clearPhoneTurnState();
       game.start();
     }
   });
@@ -616,7 +843,7 @@ async function boot() {
     }
     ui.hideOverlay();
     if (match) startLocal(localNames);
-    else game.start();
+    else { clearPhoneTurnState(); game.start(); }
   });
 
   // ---- testing / automation hooks ----
@@ -682,7 +909,7 @@ async function boot() {
       if (net && currentRoom) return;
       ui.hideOverlay();
       if (match) startLocal(localNames);
-      else game.start();
+      else { clearPhoneTurnState(); game.start(); }
     },
     state() { return JSON.parse(window.render_game_to_text()); },
   };

@@ -32,6 +32,7 @@ const pairScreen = $('pair-screen'), motionScreen = $('motion-screen'), ctlScree
 const codeInput = $('pair-code'), pairBtn = $('pair-btn'), pairErr = $('pair-err');
 const enableBtn = $('enable-motion');
 const statusDot = $('status-dot'), statusText = $('status-text'), latency = $('latency');
+const slotBadge = $('slot-badge');
 const tilt = $('tilt-indicator'), tiltBg = $('tilt-fill');
 const modeBtn = $('mode-btn'), throwBtn = $('throw-btn'), calBtn = $('cal-btn');
 const swingHint = $('swing-hint');
@@ -68,13 +69,24 @@ async function connect(codeOrToken) {
     onOpen() { show(motionScreen); requestMotion(); },
     onStatus(kind, detail) {
       if (kind === 'connected') setStatus('ok', 'Connected');
-      else if (kind === 'disconnected') setStatus('warn', 'Connection lost — swipe down to reload');
+      else if (kind === 'disconnected') {
+        setStatus('warn', 'Connection lost — swipe down to reload');
+        canThrow = false; // permission is meaningless while disconnected
+        updateThrowUI();
+      }
       else if (kind === 'error') setStatus('err', 'Error: ' + (detail || ''));
       else if (kind === 'connecting') setStatus('warn', 'Connecting…');
     },
     onCtl(m) {
       if (m.t === 'phase') {
         canThrow = !!m.canThrow;
+        waitText = m.waitText || null;
+        if (!canThrow) resetSwing(); // a swing must not carry across a turn
+        // slot = which phone we are (1-based); phones = how many are connected
+        if (m.slot) {
+          slotBadge.textContent = m.phones > 1 ? `P${m.slot}/${m.phones}` : `P${m.slot}`;
+          slotBadge.classList.remove('hidden');
+        }
         updateThrowUI();
       }
     },
@@ -199,6 +211,12 @@ let swinging = false, swingStart = 0, swingPeak = 0, spinAccum = 0;
 
 let lastMotionTs = 0;
 function onMotion(e) {
+  // swing detection only runs while we're allowed to throw — a swing must
+  // never accumulate while waiting and release the moment a turn starts
+  if (!canThrow) {
+    if (swinging) resetSwing();
+    return;
+  }
   const acc = e.accelerationIncludingGravity;
   const rot = e.rotationRate;
   if (!acc || acc.x == null) return;
@@ -229,9 +247,19 @@ function onMotion(e) {
 }
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+/** Abort any in-progress swing (permission lost / turn handed over). */
+function resetSwing() {
+  swinging = false;
+  swingPeak = 0;
+  spinAccum = 0;
+  swingHint.classList.remove('armed');
+}
+
 let lastThrowAt = 0;
 function sendThrow(power, spin) {
-  if (!client || !client.connected) return;
+  // gate on the mirrored turn permission too — the host stays authoritative,
+  // but this keeps the phone from showing "Thrown" for a rejected swing
+  if (!client || !client.connected || !canThrow) return;
   lastThrowAt = performance.now();
   // snapshot the release orientation together with power/spin so the host
   // maps the throw atomically instead of racing the 30Hz tilt stream
@@ -295,6 +323,7 @@ function refreshSettingsUI() {
 // ------------------------------ controls ---------------------------------
 let buttonMode = false;  // false = swing throw (default), true = button throw
 let canThrow = false;    // mirrored from the game via phase messages
+let waitText = null;      // why we're waiting (from the game), or null
 let latestPower = 0.62, latestSpin = 0;
 
 modeBtn.addEventListener('click', () => {
@@ -317,12 +346,13 @@ function updateThrowUI() {
   swingHint.textContent = canThrow
     ? (buttonMode ? `${aimWord[0].toUpperCase() + aimWord.slice(1)} to aim — tap THROW`
                  : `${aimWord[0].toUpperCase() + aimWord.slice(1)} to aim — SWING to throw`)
-    : 'Waiting for your turn…';
+    : (waitText || 'Waiting for your turn…');
   throwBtn.disabled = !canThrow;
 }
 
 // Orientation stream to the game (30Hz, unreliable channel, host drops stale).
 let lastSent = 0;
+let seq = 0; // monotonic sample counter for stale-sample dropping
 function tick() {
   const now = performance.now();
   if (client && client.connected && now - lastSent >= 33) {

@@ -99,18 +99,26 @@
           <button id="btn-online-back" class="menu-link">Back</button>
           <p id="online-error" class="menu-error hidden"></p>
         </div>
-        <!-- phone controller pairing -->
+        <!-- phone controller pairing (multi-phone: 1-4 slots) -->
         <div id="menu-phone" class="menu-screen hidden">
-          <p class="menu-label">Pair your phone</p>
+          <p class="menu-label">How many phones?</p>
+          <div id="phone-count-row">
+            <button class="count-btn selected" data-phones="1">1</button>
+            <button class="count-btn" data-phones="2">2</button>
+            <button class="count-btn" data-phones="3">3</button>
+            <button class="count-btn" data-phones="4">4</button>
+          </div>
+          <p class="menu-label">Pair your phones</p>
           <canvas id="phone-qr" width="200" height="200"></canvas>
-          <p class="menu-label">or visit this site on your phone and enter</p>
+          <p class="menu-label">or visit this site on each phone and enter</p>
           <div id="phone-code">----</div>
-          <p id="phone-status" class="menu-note">Starting…</p>
-          <p class="menu-note small-note">Tilt the phone to steer, swing it forward to throw (Wii-style). RECENTER sets neutral; SETUP on the phone has control-scheme presets (wheel / twist / swing-only) and sensitivity.</p>
+          <div id="phone-slots"></div>
+          <p id="phone-status" class="menu-note">Pick how many phones, then pair</p>
+          <p class="menu-note small-note">Tilt a phone to steer, swing it forward to throw (Wii-style). MULTIPLE PHONES: in LOCAL MULTIPLAYER phone 1 bowls for bowler 1, phone 2 for bowler 2, and so on — bowlers without a phone of their own are controlled by any connected phone (shared). With just ONE phone connected, it controls whichever bowler is up (pass the phone around). Extra phones beyond the roster share the active bowler. RECENTER sets neutral; SETUP on the phone has control-scheme presets (wheel / twist / swing-only) and sensitivity.</p>
           <button id="btn-phone-done" class="menu-btn hidden">DONE — PICK A MODE</button>
           <div id="phone-pair-row" class="hidden">
             <button id="btn-phone-back" class="menu-link">Back</button>
-            <button id="btn-phone-disconnect" class="menu-link danger">Disconnect phone</button>
+            <button id="btn-phone-disconnect" class="menu-link danger">Disconnect phones</button>
           </div>
           <p id="phone-connected-note" class="menu-note hidden">Phone controller connected — pick a mode and bowl</p>
         </div>

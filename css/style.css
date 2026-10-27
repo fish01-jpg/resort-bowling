@@ -665,6 +665,16 @@ kbd {
 .dot.warn { background: #f7b267; box-shadow: 0 0 8px #f7b267; }
 .dot.err { background: #ef5d43; box-shadow: 0 0 8px #ef5d43; }
 .lat { color: #9fc3d8; }
+.slot-badge {
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: #062739;
+  background: linear-gradient(180deg, #ffd9a0, #f7b267);
+  border-radius: 999px;
+}
+.slot-badge.hidden { display: none; }
 
 .tilt-stage {
   position: relative;
@@ -730,6 +740,28 @@ kbd {
 #phone-pair-row { display: flex; gap: 18px; justify-content: center; }
 #phone-pair-row.hidden { display: none; }
 .menu-link.danger { color: #ef5d43; }
+
+/* multi-phone pairing: slot chips (P1..P4) + count selector */
+#phone-count-row { display: flex; gap: 10px; justify-content: center; }
+#phone-slots { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; min-height: 34px; }
+#phone-slots:empty { min-height: 0; }
+.slot-chip {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: #cfe6f2;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.slot-chip.ok {
+  color: #062739;
+  background: linear-gradient(180deg, #ffd9a0, #f7b267);
+  border-color: #f7b267;
+  cursor: default;
+}
 
 /* phone settings screen */
 .seg-row {

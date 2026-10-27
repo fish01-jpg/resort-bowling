@@ -245,3 +245,16 @@ fullgame sim OK.
   unit-tested: swap, zero-center, sensitivity gain, composition).
 - Tests: orientation 31/31, controls 15/15, match 24/24, online 15/15,
   revision 6/6, physics 11/11 — no regressions.
+
+## Multi-phone controllers (2026-10-27, round 3 of user feedback)
+
+User request: support multiple phone controllers on the same game (one phone per player), fix "waiting for your turn" showing with only one phone connected, and let the user pick how many phones (1-4) are connecting.
+
+Changes (NOT runtime-tested per user's instruction — user will test):
+- rtc.js: PhoneHost is now a multi-slot hub. Each phone slot (0-3) gets its OWN signaling doc (fresh token + code) and its own RTCPeerConnection; callbacks are (slot, ...). closeSlot() tears down one phone without dropping the others; startPairing(base, slot) is safe to re-run for re-pairing. PhoneClient unchanged (a phone never needs to know which slot it is from signaling — the host tells it via phase messages).
+- main.js: per-slot turn logic. Hot-seat: with MULTIPLE phones live and the active bowler within the phone count, phone k+1 bowls for bowler k+1; bowlers without a dedicated phone (e.g. 2 phones, 4 bowlers) are controlled by any phone (shared). With a SINGLE phone live, it controls whoever is up (pass-the-phone) so it can never be stuck "waiting". Solo/online: all phones control the local bowler (online still gated by room turn). Phone-side swing detection also resets when permission is lost so a swing can't carry across a turn handoff.
+- Pre-existing live-steering bugs found and fixed while in here: (1) phone-main.js used an undeclared `seq` counter (++seq threw every tick, killing the 30Hz loop); (2) the state channel sent {roll,yaw} field names while the host read steer/aim (NaN controls). sendState now sends steer/aim and seq is declared.
+- "Waiting" bug fixes: (1) the re-arm lock (phone must return to neutral after a throw) now auto-releases 3s after the AIMING phase begins (timer starts on the ready-phase transition, not at throw time) — previously it could stick forever and the phone showed "Waiting for your turn…" with one phone; (2) the phone now shows WHY it's waiting (waitText from the host: "Ball in play…", "Waiting for your turn — <name> is up", "Return the phone upright to aim again", "Start a game on the big screen") instead of a generic message.
+- Pairing flow: the phone menu now has a "How many phones?" selector (1-4, default 1). Pairing fills the first empty slot and auto-advances: once phone 1 connects, a fresh QR/code is generated for phone 2, and so on. Per-slot chips (P1..P4) show status; tapping a disconnected chip re-pairs that slot. Disconnect closes all slots; Back only kicks phones that never connected.
+- phone.html/phone-main.js: slot badge (P1, P2/4 …) in the controller header + waitText display.
+- css/style.css: slot-chip, slot-badge, phone-count-row styles.

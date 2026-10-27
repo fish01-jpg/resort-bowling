@@ -38,6 +38,7 @@ export class UI {
       phoneDone: document.getElementById('btn-phone-done'),
       phoneDisconnect: document.getElementById('btn-phone-disconnect'),
       phonePairRow: document.getElementById('phone-pair-row'),
+      phoneSlots: document.getElementById('phone-slots'),
       phoneConnectedNote: document.getElementById('phone-connected-note'),
       phoneMenuNote: document.getElementById('phone-menu-note'),
       localNames: document.getElementById('local-names'),
