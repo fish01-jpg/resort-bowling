@@ -57,6 +57,7 @@ export class BowlingGame {
     this.phase = 'rolling';
     this._settleTimer = 0;
     this._postBallT = 0;
+    this._quietT = 0;
     this._ballDone = false;
     this._firstImpactDone = false;
     this._pinSoundBudget = 0;
@@ -104,13 +105,15 @@ export class BowlingGame {
       if (this._ballDone) this._postBallT += dt;
       const pinsQuiet = p.pinsSettled();
       const timeout = this._settleTimer > TUNING.settleTimeout;
-      // Wait for the pins to actually stop moving after the ball is gone.
-      // (_postBallT is time since ball-finished, unlike _settleTimer which
-      // spans the whole delivery — scoring early froze pins mid-air before.)
+      // Score only after the pins have been STILL for settleQuiet seconds
+      // straight — mid-air or still-tumbling pins must not be frozen/scored.
+      // _quietT accumulates continuous stillness; any motion resets it.
+      // Force-settle at settleTimeout (15s) no matter what.
+      this._quietT = pinsQuiet ? this._quietT + dt : 0;
       const readyToScore =
         this._ballDone &&
         this._postBallT > 0.35 &&
-        (pinsQuiet || this._postBallT > TUNING.postBallSettle);
+        this._quietT > TUNING.settleQuiet;
       if (readyToScore || timeout) {
         this._settle();
       }

@@ -81,3 +81,28 @@ Discriminating checks: untouched settled rack stays 10 standing; centered zero-s
 - Tuning data from the harness: dead-center straight ball -> 6 pins, 0 strikes
   (leaves splits, realistic); pocket throw with hook -> 8-10 pins, ~50% strikes when
   well-centered, ~15-20% with human jitter. Aim/position actually matter now.
+
+## Fix 4 — pin physics feel + settle rules (2026-10-27)
+
+User feedback: make misses easier, pins lighter with more pin-vs-pin action,
+ball should feel resistance, and never reset the rack while pins are still
+moving (wait up to ~15s; reset as soon as they stop).
+
+Changes:
+- Pins lighter: 1.64kg -> ~1.57kg (densities 300/1100), restitution 0.05 -> 0.12,
+  friction 0.4 -> 0.5, damping lowered (linear 0.22, angular 0.35) — livelier
+  pin-on-pin scatter, ball visibly slows and deflects on contact.
+- Speed-invariant hook: hook accel scales with (v/ref)^2 (ref 8 m/s) and the
+  on-screen guide uses the same model — the ball now enters the pins at the SAME
+  spot regardless of power, so power affects pace/carry only. Before, each power
+  level landed the ball somewhere different (razor-thin strike window).
+- Ball max speed capped 10.5 -> 9.6 m/s (real bowling pace).
+- Settle: scores only after pins are STILL for 0.75s straight; force-settle cap
+  raised 8s -> 15s. Standing pins must be truly still; fallen pins just need to
+  not be flying (slow pit creep no longer blocks scoring).
+- Sealed the pit: pins used to escape the world through a gap beside the pit
+  floor / under the side walls and fall forever (forced every settle to 15s).
+  Pit floor widened/thickened, side walls extended down and past the pit.
+- Verified headlessly: 11/11 physics tests, 32/32 scoring tests, full games avg
+  ~120 with 1-4 strikes. Perfect pocket throw strikes at any power; human-jitter
+  pocket throws strike ~25%; dead-center straight leaves 6-7 pins; gutter = 0.

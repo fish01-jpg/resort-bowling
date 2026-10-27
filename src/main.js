@@ -78,8 +78,6 @@ async function boot() {
     g.group.visible = show;
     if (!show) return;
     const c = input.controls;
-    const power = input.charging ? Math.max(0.12, c.power) : 0.7;
-    const speed = TUNING.minSpeed + power * (TUNING.maxSpeed - TUNING.minSpeed);
     let x = c.position;
     let z = -1.8;
     let dxz = Math.tan(c.aim); // dx/dz
@@ -89,7 +87,8 @@ async function boot() {
     for (let i = 0; i < 1100 && di < dots.length; i++) {
       const ramp = 0.3 + 0.7 * Math.min(1, Math.max(0, z) / LANE.pinZ) ** 2;
       const a = c.spin * TUNING.hookAccel * ramp;
-      dxz += (a / (speed * speed)) * step;
+      // speed-invariant hook: same curve at every power level
+      dxz += (a / (TUNING.hookRefSpeed * TUNING.hookRefSpeed)) * step;
       x += dxz * step;
       z += step;
       const target = -1.8 + (di + 1) * 1.05;

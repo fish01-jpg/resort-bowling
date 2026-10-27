@@ -48,11 +48,11 @@ export class Physics {
     }
     // side walls
     for (const side of [-1, 1]) {
-      add(RAPIER.ColliderDesc.cuboid(0.05, 1.1, laneLen / 2 + 2), side * 1.15, 1.0, laneCz, 0.1);
+      add(RAPIER.ColliderDesc.cuboid(0.05, 1.5, laneLen / 2 + 3.4), side * 1.15, 0.6, laneCz + 0.7, 0.1);
     }
     // pit floor + back wall (pit starts at deckEndZ)
-    add(RAPIER.ColliderDesc.cuboid(1.0, 0.05, 1.1), 0, -0.35, LANE.pitZ + 1.1, 0.2);
-    add(RAPIER.ColliderDesc.cuboid(1.1, 0.8, 0.05), 0, 0.3, LANE.pitZ + 2.35, 0.1);
+    add(RAPIER.ColliderDesc.cuboid(1.3, 0.3, 1.25), 0, -0.6, LANE.pitZ + 1.25, 0.2);
+    add(RAPIER.ColliderDesc.cuboid(1.2, 1.3, 0.05), 0, 0.8, LANE.pitZ + 2.35, 0.1);
   }
 
   _buildBall() {
@@ -64,7 +64,7 @@ export class Physics {
     const col = RAPIER.ColliderDesc.ball(LANE.ballRadius)
       .setDensity(LANE.ballMass / ((4 / 3) * Math.PI * LANE.ballRadius ** 3))
       .setFriction(0.05)
-      .setRestitution(0.08);
+      .setRestitution(0.1);
     this.world.createCollider(col, this.ballBody);
     this.ballBody.enableCcd(true);
   }
@@ -73,23 +73,23 @@ export class Physics {
     const spot = PIN_SPOTS[index];
     const desc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(spot.x, 0.02, spot.z)
-      .setLinearDamping(0.35)
+      .setLinearDamping(0.22)
       .setAngularDamping(0.35);
     const body = this.world.createRigidBody(desc);
     // main cylinder — collision events enabled for impact sounds
     const cyl = RAPIER.ColliderDesc.cylinder(LANE.pinHeight / 2 - 0.02, 0.052)
       .setTranslation(0, LANE.pinHeight / 2, 0)
-      .setDensity(310) // ~1.2 kg
-      .setFriction(0.4)
-      .setRestitution(0.05)
+      .setDensity(300) // ~1.15 kg
+      .setFriction(0.5)
+      .setRestitution(0.12)
       .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
     const c1 = this.world.createCollider(cyl, body);
     // dense base slug to lower the center of mass
     const base = RAPIER.ColliderDesc.ball(0.045)
       .setTranslation(0, 0.05, 0)
-      .setDensity(1150) // ~0.44 kg
-      .setFriction(0.4)
-      .setRestitution(0.05)
+      .setDensity(1100) // ~0.42 kg
+      .setFriction(0.5)
+      .setRestitution(0.12)
       .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
     const c2 = this.world.createCollider(base, body);
     this._pinHandles.set(c1.handle, index);
@@ -151,7 +151,7 @@ export class Physics {
     while (z < LANE.deckEndZ) {
       const ramp = 0.3 + 0.7 * Math.min(1, Math.max(0, z) / LANE.pinZ) ** 2;
       const a = spin * TUNING.hookAccel * ramp;
-      dxz += (a / (speed * speed)) * step;
+      dxz += (a / (TUNING.hookRefSpeed * TUNING.hookRefSpeed)) * step;
       x += dxz * step;
       z += step;
       pts.push({ z, x });
@@ -202,11 +202,21 @@ export class Physics {
   }
 
   pinsSettled() {
+    // Standing pins can still topple, so they must be quite still.
+    // Fallen pins (deck or pit) just need to not be flying around —
+    // slow residual creep in the pit must not block scoring forever.
     for (let i = 0; i < 10; i++) {
       const b = this.pinBodies[i];
       if (!b) continue;
       const v = b.linvel(), w = b.angvel();
-      if (Math.hypot(v.x, v.y, v.z) > 0.28 || Math.hypot(w.x, w.y, w.z) > 0.6) return false;
+      const speed = Math.hypot(v.x, v.y, v.z);
+      const angvel = Math.hypot(w.x, w.y, w.z);
+      const st = this.pinState(i);
+      if (st.standing) {
+        if (speed > 0.3 || angvel > 1.0) return false;
+      } else if (speed > 0.6 || angvel > 2.5) {
+        return false;
+      }
     }
     return true;
   }
@@ -227,7 +237,9 @@ export class Physics {
     // hook force while ball is on the lane
     if (this.activeSpin !== 0 && bs.onLane && bs.vz > 1) {
       const ramp = 0.3 + 0.7 * Math.min(1, bs.z / LANE.pinZ) ** 2;
-      const a = this.activeSpin * TUNING.hookAccel * ramp;
+      // normalize by speed so the hook CURVE is the same at every power
+      // level — power changes pace, not where the ball enters the pins.
+      const a = this.activeSpin * TUNING.hookAccel * ramp * (bs.vz / TUNING.hookRefSpeed) ** 2;
       this.ballBody.applyImpulse({ x: a * LANE.ballMass * dt, y: 0, z: 0 }, true);
     }
     // aim assist: gentle steering toward the projected guide path
