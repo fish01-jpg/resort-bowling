@@ -19,6 +19,14 @@ User rules (added 2026-10-27):
 
 - Boot, title screen click, ready phase, throw (charge/release), strike detection, sweep animation, respot, scorecard X/pending scores, message overlays.
 
+## Bug-fix pass 3 (2026-10-27, round 2 of user feedback)
+
+User reported (after pass 2 push): still always strike, ball rolls backward off track / doesn't roll forward. Live-site check confirmed the NEW build is deployed (constants.js shows approachStartZ/deckEndZ, angvel is +speed/R) — user's symptoms exactly match the OLD cached build (lip bounce + backspin + always-strike). Told user to hard-refresh / incognito.
+
+Also added requested aim assist (physics.js step()): at throw, a guide path is computed from the same kinematic model as the visual dots (position + aim + spin hook at actual thrown speed). While rolling, a capped steering force (gain 1.6/m, max 0.45 m/s²) pulls the ball toward the guide path, disabled beyond 0.35m of path error. Aiming at the gutter guides the ball into the gutter — misses stay misses.
+
+Tuning knobs for the assist live in TUNING (assistGain/assistMax/assistCutoff).
+
 ## Bug-fix pass 2 (2026-10-27, after user's first test)
 
 User reported: always strike, pins never react, ball rolls off lane, camera doesn't follow, ball doesn't roll, quality poor. Root causes found (code-reviewed, NOT yet browser-verified per user's rule):

@@ -132,7 +132,44 @@ export class Physics {
     this.ballBody.setAngvel({ x: speed / LANE.ballRadius, y: 0, z: 0 }, true);
     this.ballBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
     this.activeSpin = THREE.MathUtils.clamp(spin, -1, 1);
+    this._guide = this._buildGuidePath(position, aim, speed, this.activeSpin);
     this._collisions = [];
+  }
+
+  /**
+   * The projected path shown by the aim guide: kinematic integration of
+   * position + aim + spin hook (same model as the on-screen dots).
+   * The assist nudges the real ball toward THIS path — where the player aimed.
+   */
+  _buildGuidePath(x0, aim, speed, spin) {
+    const pts = [];
+    let x = x0;
+    let z = -1.8;
+    let dxz = Math.tan(aim);
+    const step = 0.3;
+    while (z < LANE.deckEndZ) {
+      const ramp = 0.3 + 0.7 * Math.min(1, Math.max(0, z) / LANE.pinZ) ** 2;
+      const a = spin * TUNING.hookAccel * ramp;
+      dxz += (a / (speed * speed)) * step;
+      x += dxz * step;
+      z += step;
+      pts.push({ z, x });
+    }
+    return pts;
+  }
+
+  _guideXAt(z) {
+    const pts = this._guide;
+    if (!pts || pts.length === 0) return null;
+    if (z <= pts[0].z) return pts[0].x;
+    for (let i = 1; i < pts.length; i++) {
+      if (z <= pts[i].z) {
+        const a = pts[i - 1], b = pts[i];
+        const t = (z - a.z) / (b.z - a.z);
+        return a.x + (b.x - a.x) * t;
+      }
+    }
+    return null;
   }
 
   ballState() {
@@ -185,12 +222,25 @@ export class Physics {
   }
 
   step(dt) {
-    // hook force while ball is on the lane
     const bs = this.ballState();
+    // hook force while ball is on the lane
     if (this.activeSpin !== 0 && bs.onLane && bs.vz > 1) {
       const ramp = 0.3 + 0.7 * Math.min(1, bs.z / LANE.pinZ) ** 2;
       const a = this.activeSpin * TUNING.hookAccel * ramp;
       this.ballBody.applyImpulse({ x: a * LANE.ballMass * dt, y: 0, z: 0 }, true);
+    }
+    // aim assist: gentle steering toward the projected guide path
+    if (this._guide && bs.onLane && bs.z > -1.9 && bs.z < LANE.pinZ) {
+      const guideX = this._guideXAt(bs.z);
+      if (guideX !== null) {
+        const err = bs.x - guideX;
+        if (Math.abs(err) < TUNING.assistCutoff) {
+          const a = THREE.MathUtils.clamp(
+            -err * TUNING.assistGain, -TUNING.assistMax, TUNING.assistMax
+          );
+          this.ballBody.applyImpulse({ x: a * LANE.ballMass * dt, y: 0, z: 0 }, true);
+        }
+      }
     }
     this.world.step(this.eventQueue);
   }

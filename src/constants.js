@@ -32,6 +32,11 @@ export const TUNING = {
   maxAim: 0.045,         // ~2.6 degrees
   maxPosition: 0.44,     // lateral ball placement
   hookAccel: 0.5,        // max lateral acceleration from spin (m/s^2)
+  // Aim assist: gently steers the ball toward the projected guide path.
+  // Capped and distance-limited so real misses still miss.
+  assistGain: 1.6,        // correction acceleration per meter of error
+  assistMax: 0.45,        // max correction acceleration (m/s^2)
+  assistCutoff: 0.35,     // no assist beyond this much path error (m)
   chargePeriod: 1.4,     // seconds for full power cycle (up and back)
   postBallSettle: 3.0,    // max seconds to wait for pins after ball is done
   settleTimeout: 8.0,    // absolute force-settle after this long

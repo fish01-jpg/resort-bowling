@@ -9,6 +9,7 @@ Play: **https://fish01-jpg.github.io/resort-bowling/** (GitHub Pages)
 - **Real bowling rules** — strikes, spares, splits, 10th-frame bonus balls, pending scores shown until bonuses resolve. Rules engine is unit-tested (32 tests, including 300 / 150 / 90 / 0 score verification).
 - **Real physics** — Rapier (WASM) rigid-body simulation: ball–pin and pin–pin collisions, tipping pins, gutters, hook/spin that ramps up on the dry back end of the lane.
 - **Wii-style throw** — position the ball, aim, hold SPACE to charge power (oscillating meter), set spin while charging, release to bowl.
+- **Aim assist** — the on-screen dot trail shows your projected path (including hook), and a gentle capped steering force nudges the ball toward that path. Misses still miss: aim at the gutter and the ball follows your aim there.
 - **Resort atmosphere** — sunset lighting, wood lane with arrows, palm trees, procedural sound (rolling rumble, pin clatter, strike/spare jingles, gentle marimba loop).
 - **Full scorecard HUD** — frame-by-frame rolls (X, /, -), running totals, current-frame highlight, frame/ball indicator.
 - **Automation hooks** — `window.render_game_to_text()`, `window.advanceTime(ms)`, and `window.BowlingAPI.deliverBall({position, aim, power, spin})` for scripted play and future controllers.
