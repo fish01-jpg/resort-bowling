@@ -489,3 +489,30 @@ Round 10 fixes (review pass — robustness + race hardening):
   only captures a genuinely held stance.
 - close() now cancels (rejects) a pending connect waiter instead of
   resolving it, and code lookup is bounded like the rest of the attempt.
+
+Round 11 fixes (review pass — waiter sharing + takeover semantics + tests):
+
+- One shared connect waiter: a renegotiation RENEWS the existing watchdog
+  deadline instead of stacking a second one (a second watchdog could kill
+  the healthy replacement attempt). This also fixed a TDZ crash in the
+  waiter construction and a wrong `snap.exists()` call (Firestore's
+  exists is a property, not a method — would have thrown in production).
+- The host marks the doc 'connected' when the reliable channel opens and
+  'disconnected' when it closes — so the stale-claim takeover is now
+  exactly "old claim AND session not currently live" (a live session is
+  never stolen; a dead one is recoverable).
+- Stale channel events are ignored on both sides (callbacks capture
+  their peer and bail), including channel-close from a REPLACED peer.
+- The renegotiation deadline covers the whole attempt (SDP + Firestore
+  transaction too), reports an actionable 'reconnect timed out' error
+  instead of failing silently, and a newer generation seen mid-
+  renegotiation is retained and processed afterwards.
+- Dampened host refreshes are SCHEDULED (run when the 2s window expires)
+  instead of dropped; a refreshed offer resets the sample counter.
+- The re-aim dwell is also a stable-pose dwell (drift restarts it).
+- NEW offline lifecycle tests (tests/rtc.test.mjs, 19 checks): fake
+  in-memory Firestore + fake RTCPeerConnection — covers generation
+  refresh during initial connection, survival past the ORIGINAL
+  watchdog deadline, shared-waiter renewal, stale channel-close events,
+  renegotiation timeout/error reporting, and stale-claim takeover
+  semantics. Still NO live testing (per the project rules).

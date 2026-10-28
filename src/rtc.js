@@ -39,7 +39,9 @@ const FIREBASE_CONFIG = {
 const COLLECTION = 'bowlingControllers';
 const SESSION_TTL_MS = 60 * 60 * 1000; // sessions expire after 1 hour
 const ICE_GATHER_TIMEOUT_MS = 4000;
-const CLIENT_CONNECT_TIMEOUT_MS = 20000; // phone gives up + retries instead of hanging
+// phone gives up + retries instead of hanging (offline tests shorten it via
+// the _testHooks export at the bottom of this file)
+let CLIENT_CONNECT_TIMEOUT_MS = 20000;
 const STALE_CLAIM_MS = 90000; // a claimed-but-never-paired session can be taken over
 
 // STUN-only pairing fails on symmetric-NAT / strict networks (hotspots,
@@ -196,10 +198,17 @@ export class PhoneHost {
           this.onStatus(slot, 'error', 'bad answer: ' + e.message);
         });
       } else {
-        // rate-limit: two live tabs sharing the device uid could otherwise
-        // ping-pong refreshes forever
-        if (Date.now() - (s.lastRefreshAt || 0) < 2000) return;
-        this._refreshOffer(s);
+        // dampen: two live tabs sharing the device uid could otherwise
+        // ping-pong refreshes forever — but DON'T drop the trigger: run it
+        // once the dampening window expires
+        const wait = 2000 - (Date.now() - (s.lastRefreshAt || 0));
+        if (wait <= 0) { this._refreshOffer(s); return; }
+        if (!s.refreshTimer) {
+          s.refreshTimer = setTimeout(() => {
+            s.refreshTimer = null;
+            if (!s.closed && !s.refreshing) this._refreshOffer(s);
+          }, wait);
+        }
       }
     }, (err) => { if (!s.closed) this.onStatus(slot, 'error', err.message); });
 
@@ -263,6 +272,7 @@ export class PhoneHost {
    */
   async _refreshOffer(s) {
     if (s.closed || s.refreshing) return;
+    if (s.refreshTimer) { clearTimeout(s.refreshTimer); s.refreshTimer = null; }
     s.refreshing = true;
     s.lastRefreshAt = Date.now();
     try {
@@ -295,20 +305,39 @@ export class PhoneHost {
   }
 
   _wireChannels(s) {
+    // capture the peer these channels belong to: after a refresh/renegotiation
+    // the OLD channel's late events must not touch the new session state
+    const pc = s.pc;
+    const live = () => s.pc === pc && !s.closed;
     // "connected" only counts once the RELIABLE channel is actually open —
     // connectionState 'connected' does not guarantee that, and phase
     // messages sent before open are silently dropped.
     s.ctlCh.addEventListener('open', () => {
+      if (!live()) return;
       s.connected = true;
       this.onStatus(s.slot, 'connected');
       this._startPing(s);
-      // mark the session LIVE in the doc — a connected session is never
-      // taken over by the stale-claim takeover path
+      // mark the session LIVE in the doc — a live session is never taken
+      // over by the stale-claim takeover path
       updateDoc(doc(db(), COLLECTION, s.docId), {
         status: 'connected', updatedAt: serverTimestamp(),
       }).catch(() => {});
     });
+    s.ctlCh.addEventListener('close', () => {
+      if (!live()) return; // a REPLACED channel closing is not a disconnect
+      if (s.connected) {
+        s.connected = false;
+        this.onStatus(s.slot, 'disconnected');
+        // release the live mark so the stale-claim takeover can recover the
+        // slot if this connection is really gone
+        updateDoc(doc(db(), COLLECTION, s.docId), {
+          status: 'disconnected', updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
+      this._stopPing(s);
+    });
     s.stateCh.addEventListener('message', (ev) => {
+      if (!live()) return;
       try {
         const m = JSON.parse(ev.data);
         if (m.t === 's') {
@@ -320,7 +349,7 @@ export class PhoneHost {
       } catch { /* ignore malformed */ }
     });
     s.ctlCh.addEventListener('message', (ev) => {
-      if (s.closed) return;
+      if (!live()) return;
       let m;
       try { m = JSON.parse(ev.data); } catch { return; }
       switch (m.t) {
@@ -378,6 +407,7 @@ export class PhoneHost {
     if (s.unsub) { s.unsub(); s.unsub = null; }
     if (s.pc) { try { s.pc.close(); } catch { /* already closed */ } s.pc = null; }
     if (s.docId) { deleteDoc(doc(db(), COLLECTION, s.docId)).catch(() => {}); }
+    if (s.refreshTimer) { clearTimeout(s.refreshTimer); s.refreshTimer = null; }
     s.connected = false;
     this.sessions = this.sessions.filter((x) => x !== s);
   }
@@ -488,17 +518,18 @@ export class PhoneClient {
     let offerGen = 1;
     await runTransaction(db(), async (tx) => {
       const snap = await tx.get(ref);
-      if (!snap.exists()) throw new Error('Session not found');
+      if (!snap.exists) throw new Error('Session not found');
       const room = snap.data();
       if ((room.expiresAt || 0) < Date.now()) throw new Error('That session expired');
       if (room.claim && room.claim.uid !== this.uid) {
-        // A stale claim (claimed but never paired, sitting there for a while)
-        // blocks the slot forever — usually a phone that crashed mid-pair.
-        // Take it over so the slot is usable again. A PAIRED session is never
-        // stolen (the phone that owns it can reconnect via its stored uid).
-        const neverPaired = !room.answer && room.status !== 'paired';
+        // A stale claim blocks the slot forever — usually a phone that crashed
+        // mid-pair. Take it over once the claim has sat for a while AND the
+        // session is not currently live (the host marks the doc 'connected'
+        // while its channel is open, and resets it when the channel closes).
+        // A live session is never taken over — its owner reconnects via its
+        // stored uid.
         const claimAge = Date.now() - (room.claim.claimedAt || 0);
-        if (!(neverPaired && claimAge > STALE_CLAIM_MS)) {
+        if (!(claimAge > STALE_CLAIM_MS && room.status !== 'connected')) {
           throw new Error('Another controller already claimed this session');
         }
         tx.update(ref, { claim: { uid: this.uid, claimedAt: Date.now() } });
@@ -526,7 +557,7 @@ export class PhoneClient {
     // attempt must not overwrite a newer negotiation)
     await runTransaction(db(), async (tx) => {
       const snap = await tx.get(ref);
-      if (!snap.exists()) throw new Error('Session not found');
+      if (!snap.exists) throw new Error('Session not found');
       const room = snap.data();
       if ((room.expiresAt || 0) < Date.now()) throw new Error('That session expired');
       if (room.claim && room.claim.uid !== this.uid) {
@@ -589,7 +620,11 @@ export class PhoneClient {
           }
           this.onCtl(m);
         });
-        ch.addEventListener('close', () => this.onStatus('disconnected'));
+        ch.addEventListener('close', () => {
+          if (this.pc !== pc) return; // a REPLACED channel closing is not a disconnect
+          this.connected = false;
+          this.onStatus('disconnected');
+        });
       }
     });
     pc.addEventListener('connectionstatechange', () => {
@@ -633,9 +668,26 @@ export class PhoneClient {
 
   /** The host published a fresh offer (generation bump): reconnect to it. */
   async _renegotiate(gen, offerSdp) {
-    if (this._aborted || this._renegotiating) return;
+    if (this._aborted) return;
+    if (this._renegotiating) {
+      // already mid-renegotiation: RETAIN the newest generation so it is
+      // processed when the current one finishes (don't rely on another
+      // Firestore notification arriving)
+      this._pendingGen = { gen, offer: offerSdp };
+      return;
+    }
     this._renegotiating = true;
     this._gen = gen;
+    // bound from the START (the SDP work and the Firestore transaction are
+    // inside the deadline too, not just the channel wait), and a timeout is
+    // reported as an actionable error rather than silently cancelled
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      if (this.pc) { try { this.pc.close(); } catch {} this.pc = null; }
+      if (this._connWait) this._connWait.fail();
+      this.onStatus('error', 'reconnect timed out — tap CONNECT to try again');
+    }, CLIENT_CONNECT_TIMEOUT_MS);
     try {
       this.onStatus('connecting'); // host is renegotiating (reconnect)
       this.connected = false;
@@ -644,12 +696,12 @@ export class PhoneClient {
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
       await waitIce(this.pc);
-      if (this._aborted) return;
+      if (this._aborted || timedOut) return;
       // transactional, same as the initial answer
       await runTransaction(db(), async (tx) => {
         const ref = doc(db(), COLLECTION, this.docId);
         const snap = await tx.get(ref);
-        if (!snap.exists()) throw new Error('Session not found');
+        if (!snap.exists) throw new Error('Session not found');
         const room = snap.data();
         if (room.claim && room.claim.uid !== this.uid) {
           throw new Error('Another controller claimed this session');
@@ -663,34 +715,58 @@ export class PhoneClient {
           updatedAt: serverTimestamp(),
         });
       });
-      // reconnect is bounded too: if the refreshed negotiation never opens
-      // the channel, fail with an actionable status instead of hanging
+      if (this._aborted || timedOut) return;
+      // the channel-open wait reuses the SAME waiter the initial connect may
+      // still be holding (renewed deadline — no second stacked watchdog)
       await this._awaitConnected(CLIENT_CONNECT_TIMEOUT_MS);
     } catch (e) {
-      if (!this._aborted) this.onStatus('error', 'reconnect failed: ' + (e.message || e));
+      if (!timedOut && !this._aborted) this.onStatus('error', 'reconnect failed: ' + (e.message || e));
     } finally {
+      clearTimeout(deadline);
       this._renegotiating = false;
+      const pending = this._pendingGen;
+      this._pendingGen = null;
+      if (pending && !this._aborted && !this.connected) {
+        this._renegotiate(pending.gen, pending.offer);
+      }
     }
   }
 
   _awaitConnected(timeoutMs) {
     if (this.connected) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+    // ONE pending waiter at a time: if a renegotiation starts while the
+    // initial connect is still waiting, they SHARE it (the old deadline is
+    // replaced, not stacked — a second watchdog could kill the healthy
+    // replacement attempt)
+    if (this._connWait) { this._connWait.renew(timeoutMs); return this._connWait.promise; }
+    let timer = null;
+    let resolveFn = null;
+    let rejectFn = null;
+    const promise = new Promise((resolve, reject) => {
+      resolveFn = resolve;
+      rejectFn = reject;
+    });
+    const arm = (ms = timeoutMs) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
         this._connWait = null;
         this.close(); // tear down so a retry starts clean
-        reject(new Error('Connection timed out — tap CONNECT to try again'));
-      }, timeoutMs);
-      this._connWait = {
-        done: () => { clearTimeout(timer); this._connWait = null; resolve(); },
-        fail: () => {
-          clearTimeout(timer); this._connWait = null;
-          this.close(); // tear down so a retry starts clean
-          reject(new Error('Could not reach the game — tap CONNECT to try again'));
-        },
-        cancel: () => { clearTimeout(timer); reject(new Error('Connection cancelled')); },
-      };
-    });
+        rejectFn(new Error('Connection timed out — tap CONNECT to try again'));
+      }, ms);
+    };
+    arm();
+    this._connWait = {
+      promise,
+      renew: arm,
+      done: () => { clearTimeout(timer); this._connWait = null; resolveFn(); },
+      fail: () => {
+        clearTimeout(timer); this._connWait = null;
+        this.close(); // tear down so a retry starts clean
+        rejectFn(new Error('Could not reach the game — tap CONNECT to try again'));
+      },
+      cancel: () => { clearTimeout(timer); this._connWait = null; rejectFn(new Error('Connection cancelled')); },
+    };
+    return promise;
   }
 
   _sendCtl(obj) {
@@ -723,4 +799,9 @@ export class PhoneClient {
     this.connected = false;
   }
 }
+
+/** Offline tests shorten the connect watchdog via this hook (no live testing). */
+export const _testHooks = {
+  setClientConnectTimeout: (ms) => { CLIENT_CONNECT_TIMEOUT_MS = ms; },
+};
 

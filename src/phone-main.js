@@ -308,6 +308,7 @@ let lastLiveAngles = { steer: 0, aim: 0 }; // last live pose shown on screen
 let aimLiveSince = 0; // when the current live-aiming dwell began (0 = not aiming)
 let dwellPose = null; // the RAW pose when the dwell began — used to detect drift
 let relatchSince = 0; // when a deliberate pose change away from the lock began
+let relatchPose = null; // the RAW pose when the re-aim dwell began (drift check)
 let liveTwist = 0;    // smoothed wrist-twist rate (deg/s) — aim-guide preview
 let releaseTwist = 0;  // twist rate at the release flick (the throw's spin)
 
@@ -316,6 +317,8 @@ function unlockAim() {
   lockedAngles = null;
   aimLiveSince = 0;
   dwellPose = null;
+  relatchSince = 0;
+  relatchPose = null;
 }
 
 /**
@@ -341,22 +344,32 @@ function currentControlAngles() {
   }
   const label = aimLocked ? 'AIM LOCKED' : 'TILT TO AIM';
   if (tiltLabel.textContent !== label) tiltLabel.textContent = label;
-  if (swinging) { aimLiveSince = 0; dwellPose = null; relatchSince = 0; return throwAngles(); } // mid-swing: frozen
+  if (swinging) { aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null; return throwAngles(); } // mid-swing: frozen
   const raw = angles; // RAW extracted pose — the stance gate (pre-scheme)
   const inRange = Math.abs(raw.steer) <= MAX_STEER * 1.25 && Math.abs(raw.aim) <= MAX_AIM * 1.25;
   const still = stillEnough();
-  if (!inRange || !still) { aimLiveSince = 0; dwellPose = null; relatchSince = 0; return throwAngles(); } // carried / at side
+  if (!inRange || !still) { aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null; return throwAngles(); } // carried / at side
   // accepted pose: normalized ONCE — the indicator, the transmitted state and
   // the throw all use this exact value
   const m = normalizedPose(mappedAngles());
   if (aimLocked && lockedAngles) {
     // AUTO RE-AIM: deliberately hold a DIFFERENT still in-stance pose and
-    // live aiming re-opens by itself — the lock can't stick anymore
+    // live aiming re-opens by itself — the lock can't stick anymore.
+    // The re-aim dwell is a STABLE-POSE dwell too: continuous drift while
+    // "different from the lock" doesn't count — only a genuinely held new
+    // pose (raw pose within ~0.02 rad of where the dwell began) unlocks.
     const moved = Math.abs(m.steer - lockedAngles.steer) + Math.abs(m.aim - lockedAngles.aim);
     if (moved > RELATCH_MOVE) {
-      if (!relatchSince) relatchSince = performance.now();
-      else if (performance.now() - relatchSince >= AIM_RELATCH_MS) unlockAim();
-    } else relatchSince = 0;
+      if (!relatchSince) {
+        relatchSince = performance.now();
+        relatchPose = { steer: raw.steer, aim: raw.aim };
+      } else if (relatchPose &&
+                 Math.abs(raw.steer - relatchPose.steer) + Math.abs(raw.aim - relatchPose.aim) > DWELL_DRIFT) {
+        // still moving — restart the re-aim dwell from the new pose
+        relatchSince = performance.now();
+        relatchPose = { steer: raw.steer, aim: raw.aim };
+      } else if (performance.now() - relatchSince >= AIM_RELATCH_MS) unlockAim();
+    } else { relatchSince = 0; relatchPose = null; }
     if (aimLocked && lockedAngles) return lockedAngles; // still LOCKED: frozen
   }
   // still, in stance, not locked: LIVE aiming
@@ -371,7 +384,7 @@ function currentControlAngles() {
     dwellPose = { steer: raw.steer, aim: raw.aim };
   }
   if (performance.now() - aimLiveSince >= AIM_LATCH_MS) {
-    lockedAngles = m; aimLocked = true; aimLiveSince = 0; dwellPose = null; relatchSince = 0;
+    lockedAngles = m; aimLocked = true; aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null;
     lastLiveAngles = m; // commit + transmit + throw the same pose
     return lockedAngles;
   }
