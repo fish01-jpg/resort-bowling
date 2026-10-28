@@ -652,6 +652,11 @@ kbd {
   font-size: 20px;
   background: linear-gradient(180deg, #ff9d7a, #e76f51);
   box-shadow: 0 8px 24px rgba(231, 111, 81, 0.45);
+  touch-action: none; /* hold-to-throw: no scroll/zoom may steal the press */
+}
+.phone-btn.throw.armed {
+  background: linear-gradient(180deg, #ffd9a0, #f7b267);
+  box-shadow: 0 0 0 3px rgba(247, 178, 103, 0.55), 0 8px 24px rgba(231, 111, 81, 0.45);
 }
 .phone-btn:disabled { opacity: 0.45; }
 

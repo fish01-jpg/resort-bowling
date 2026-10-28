@@ -555,3 +555,67 @@ stillness — that is the AIM DWELL, and it fought the user's aiming style
   under-report — now register as throws. The 120ms sustained-motion
   filter still discards pick-up jolts.
 - Version bumped to v3 (phone badge shows v3).
+
+Round 14: HOLD-TO-THROW + loft (user-requested, untested by agent per rules)
+
+User request: the THROW button must no longer throw on a tap — you HOLD it,
+and everything you do after pressing controls the throw (not the aiming);
+richer throw sensing (angle etc.); starting low and swinging the phone UP
+should loft the in-game ball onto the lane (golf-ball hop).
+
+- Phone (phone-main.js, v4): the swing-to-throw state machine is GONE.
+  Every scheme now throws the same way: aim first, then PRESS AND HOLD
+  THROW — the aim is captured at press (tiltLabel reads ARMED, the pose
+  freezes), the devicemotion while holding is the throw, and RELEASE
+  bowls. A tap (<180ms or no throwing motion) never throws — it shows a
+  "Hold THROW, then swing" status instead. The MODE button (swing/button
+  toggle) is removed; the THROW button is always visible.
+- Throw sensing: power = peak accel deviation while held (same formula as
+  the old swing release, per-scheme thresholds); spin = wrist twist at
+  release (unchanged); LOFT = world-upward velocity integrated while the
+  throw motion is active. World-up accel comes from rotating the
+  gravity-free acceleration (fallback: accelerationIncludingGravity minus
+  gravity) by the live deviceorientation quaternion into the ENU world
+  frame (+Z is up). Only integrated while the motion is ACTIVE (drift
+  bounded), clamped to +/-4 m/s, reset on every press; full loft = 2.2 m/s
+  of upward phone velocity. Stale orientation (>300ms) reads as no loft.
+- Live feedback: the button label shows PWR % and LOFT % while holding
+  (pad mode: THROW % as the hold charges).
+- Pad mode: no sensors, so the hold itself charges power (0.15 -> 1.0 over
+  1.5s); release throws. Loft/spin are 0 there.
+- Host: onPhoneThrow clamps m.loft 0..1 and passes it through game._throw
+  to physics.throwBall, which launches the ball with vy = loft * 2.0 m/s
+  (LOFT_MAX_SPEED const in physics.js — constants.js deliberately
+  untouched to avoid a cache-bust cascade). lastLaunch carries loft, so
+  online replays reproduce the arc. BowlingAPI.deliverBall accepts loft.
+- Version bumps: phone.html -> phone-main.js?v=4 + badge v4; index.html ->
+  main.js?v=4; main.js imports physics.js?v=4 and game.js?v=4 (both
+  changed; they are imported by no one else, so no double-load).
+- CSS: .phone-btn.throw gets touch-action:none (a scroll must never steal
+  the hold) and an .armed highlight while held.
+- NOT run/tested by the agent (user rule): node --check syntax pass only.
+
+Round 14 review fixes (static review, still no runtime testing):
+
+- rotateByQuat corrected (the final cross term was missing its factor of
+  2 — the loft integration would have been garbage).
+- Motion measure now prefers the gravity-free linear-accel magnitude
+  (| |IG| - g | squares away horizontal motion); IG deviation is only
+  the fallback. A throw requires >=80ms of SUSTAINED motion during the
+  hold (holdActiveMs) AND fresh sensor data at release (motion sample
+  within 500ms) — a stationary hold + one jolt, or a release after the
+  sensors went quiet, does not throw. Loft integration is bounded to
+  the first 4s of a hold.
+- Pointer ownership: the initiating pointerId is tracked (extra fingers
+  can't restart or release the hold), lostpointercapture cancels, show()
+  cancels the hold SYNCHRONOUSLY when a modal screen opens (releasing
+  the button mid-menu can no longer throw), and controlsSuspended is
+  re-checked at release before committing.
+- The captured pose is read BEFORE unlockAim() and passed into
+  sendThrow explicitly — the packet never relies on the accidental
+  lastLiveAngles fallback.
+- physics.step() verified by review: hook/assist impulses are x-only and
+  gated on bs.onLane (y < ballRadius+0.05), so an airborne lofted ball
+  flies its arc untouched and the forces resume after landing.
+- css/style.css refs bumped to ?v=4 in BOTH html files (it changed — the
+  old ?v=2 would have served the new JS without touch-action:none).

@@ -62,11 +62,17 @@ tests/scoring.test.mjs — rules engine tests
 
 Open the game on your computer, pick **USE PHONE AS CONTROLLER**, then scan
 the QR (or open the same site on your phone and enter the 4-letter code).
-Tilt the phone to steer and swing it forward to throw; RECENTER sets neutral,
-MODE switches between swing-throw (default) and button-throw. The phone page
-is served at `phone.html`; small touch devices are redirected there
-automatically (`?desktop=1` overrides). Pairing uses Firestore only for
-WebRTC signaling — all controller traffic runs over a peer data channel.
+Tilt the phone to aim, then **HOLD the THROW button and swing your arm —
+release the button to bowl**. The aim is captured the instant you press
+(swinging can never re-aim the ball); the swing's peak acceleration is the
+power, the wrist twist at release is the hook, and swinging the phone
+UPWARD (like starting low and tossing it up) lofts the in-game ball into the
+air so it hops onto the lane. A tap never throws — the hold IS the throw.
+TOUCH PAD mode charges power from hold duration instead. RECENTER sets
+neutral. The phone page is served at `phone.html`; small touch devices are
+redirected there automatically (`?desktop=1` overrides). Pairing uses
+Firestore only for WebRTC signaling — all controller traffic runs over a
+peer data channel.
 
 Control schemes (SETUP on the phone): **WHEEL**, **TWIST**, **SWING**
 (default), **FLICK** (gentler release), and **TOUCH PAD** (drag to aim — no

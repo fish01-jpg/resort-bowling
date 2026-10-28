@@ -108,6 +108,7 @@ export class BowlingGame {
       aim: controls.aim,
       power: Math.max(0.12, controls.power),
       spin: controls.spin,
+      loft: controls.loft, // upward phone motion -> the ball launches into the air
     }, { scatter: !this._replaying });
     this.standingBefore = this._countStanding();
     this.phase = 'rolling';

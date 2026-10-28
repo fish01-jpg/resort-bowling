@@ -4,13 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
 <title>Sunset Lanes — Phone Controller</title>
-<link rel="stylesheet" href="css/style.css?v=2" />
+<link rel="stylesheet" href="css/style.css?v=4" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='44' fill='%23002e4d'/><circle cx='50' cy='50' r='26' fill='none' stroke='%23f7b267' stroke-width='10'/></svg>" />
 <meta name="theme-color" content="#002e4d" />
 </head>
 <body class="phone-body">
 <div class="phone-wrap">
-  <span id="app-version" style="position:fixed;right:8px;bottom:6px;font-size:11px;opacity:.45;z-index:50">v3</span>
+  <span id="app-version" style="position:fixed;right:8px;bottom:6px;font-size:11px;opacity:.45;z-index:50">v4</span>
 
   <!-- 1. pairing -->
   <section id="pair-screen" class="phone-screen active">
@@ -49,7 +49,7 @@
       <span class="tilt-label" id="tilt-label">TILT TO AIM</span>
     </div>
 
-    <p id="swing-hint" class="swing-hint">Aim with tilt — SWING to throw</p>
+    <p id="swing-hint" class="swing-hint">Aim with tilt — HOLD THROW & swing, release to bowl</p>
 
     <button id="throw-btn" class="phone-btn throw hidden">THROW</button>
 
@@ -62,12 +62,11 @@
     </footer>
   </section>
 
-  <!-- 4. settings: mode, recenter, control scheme + sensitivity -->
+  <!-- 4. settings: recenter, control scheme + sensitivity -->
   <section id="settings-screen" class="phone-screen">
     <h1 class="phone-title">SETUP</h1>
-    <p class="phone-label">Throw mode</p>
-    <button id="mode-btn" class="phone-btn">MODE: SWING</button>
-    <p class="settings-desc">Swing the phone like a ball, or tap THROW.</p>
+    <p class="phone-label">Throw</p>
+    <p class="settings-desc">Line up your aim, then PRESS AND HOLD THROW — swing your arm while holding (swing upward to loft the ball onto the lane) and RELEASE the button to bowl. A tap never throws.</p>
     <button id="cal-btn" class="phone-btn">RECENTER PHONE</button>
     <p class="settings-desc">Hold the phone in your stance, then recenter.</p>
     <p class="phone-label">Control scheme</p>
@@ -90,6 +89,6 @@
   </section>
 
 </div>
-<script type="module" src="src/phone-main.js?v=3"></script>
+<script type="module" src="src/phone-main.js?v=4"></script>
 </body>
 </html>

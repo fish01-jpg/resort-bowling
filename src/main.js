@@ -1,11 +1,11 @@
 import * as THREE from 'https://esm.sh/three@0.169.0';
 import RAPIER from 'https://esm.sh/@dimforge/rapier3d-compat@0.12.0';
 import { createScene } from './scene.js';
-import { Physics } from './physics.js';
+import { Physics } from './physics.js?v=4';
 import { Input } from './input.js';
 import { UI } from './ui.js';
 import { AudioFX } from './audio.js';
-import { BowlingGame } from './game.js';
+import { BowlingGame } from './game.js?v=4';
 import { Match, playerProgress, buildGames } from './match.js';
 import { RoomClient, TURN_TIMEOUT_MS } from './net.js';
 import { PhoneHost } from './rtc.js?v=2';
@@ -507,7 +507,9 @@ async function boot() {
     const aim = clamp01(m.aim / 0.45, -1, 1) * TUNING.maxAim;
     const power = clamp01(m.power, 0.12, 1);
     const spin = clamp01(m.spin, -1, 1); // wrist twist at release
-    game._throw({ position, aim, power, spin });
+    // upward phone motion while the THROW button was held -> the ball lofts
+    const loft = clamp01(m.loft || 0, 0, 1);
+    game._throw({ position, aim, power, spin, loft });
     phoneRearm.set(slot, Date.now()); // tilt steering pauses until back near neutral
     broadcastPhonePhase();
   }
@@ -1138,9 +1140,9 @@ async function boot() {
       game._throw({ ...input.controls });
       return true;
     },
-    deliverBall({ position = 0, aim = 0, power = 0.7, spin = 0 } = {}) {
+    deliverBall({ position = 0, aim = 0, power = 0.7, spin = 0, loft = 0 } = {}) {
       if (game.phase !== 'ready' || !input.enabled) return false;
-      game._throw({ position, aim, power, spin });
+      game._throw({ position, aim, power, spin, loft });
       return true;
     },
     restart() {

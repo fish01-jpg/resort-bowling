@@ -4,6 +4,11 @@ import { LANE, PIN_SPOTS, TUNING, gutterCrossSection } from './constants.js';
 
 const V = new THREE.Vector3();
 
+// LOFT tuning: upward launch speed (m/s) at full loft — a deliberate hop
+// (~0.2m of rise, lands and rolls on). Kept here instead of constants.js so
+// the unchanged constants module doesn't need a cache-bust bump everywhere.
+const LOFT_MAX_SPEED = 2.0;
+
 export class Physics {
   constructor() {
     this.world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
@@ -174,7 +179,7 @@ export class Physics {
     }
   }
 
-  throwBall({ position = 0, aim = 0, power = 0.7, spin = 0 }, { scatter = true } = {}) {
+  throwBall({ position = 0, aim = 0, power = 0.7, spin = 0, loft = 0 }, { scatter = true } = {}) {
     const speed = TUNING.minSpeed + power * (TUNING.maxSpeed - TUNING.minSpeed);
     // High-speed scatter: one bounded, speed-scaled release perturbation.
     // Seeded per throw; the ACTUAL (post-scatter) launch is kept in
@@ -187,9 +192,16 @@ export class Physics {
       aim += (Math.random() * 2 - 1) * TUNING.wobbleMaxAim * k;
       spin = Math.max(-1, Math.min(1, spin + (Math.random() * 2 - 1) * TUNING.wobbleMaxSpin * k));
     }
-    this.lastLaunch = { position, aim, power, spin };
+    // LOFT: the player swung the phone UPWARD while holding THROW — the ball
+    // launches into the air and hops onto the lane like a lobbed golf ball
+    // instead of rolling out. Full loft = LOFT_MAX_SPEED of rise (~0.2m),
+    // a deliberate hop: it is recorded in lastLaunch so online replays
+    // reproduce the same airborne arc.
+    const loft01 = THREE.MathUtils.clamp(loft || 0, 0, 1);
+    const loftV = LOFT_MAX_SPEED * loft01;
+    this.lastLaunch = { position, aim, power, spin, loft: loft01 };
     this.ballBody.setTranslation({ x: position, y: LANE.ballRadius, z: -1.8 }, true);
-    this.ballBody.setLinvel({ x: Math.sin(aim) * speed, y: 0, z: Math.cos(aim) * speed }, true);
+    this.ballBody.setLinvel({ x: Math.sin(aim) * speed, y: loftV, z: Math.cos(aim) * speed }, true);
     // forward roll: rotation about +x for motion along +z
     this.ballBody.setAngvel({ x: speed / LANE.ballRadius, y: 0, z: 0 }, true);
     this.ballBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
