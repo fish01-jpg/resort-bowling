@@ -9,7 +9,7 @@ export class Input {
     this.charging = false;
     this.chargeT = 0;
     this.enabled = true; // false = turn belongs to someone else (multiplayer)
-    this.controls = { position: 0, aim: 0, power: 0, spin: 0 };
+    this.controls = { position: 0, startX: 0, aim: 0, power: 0, spin: 0 };
     this.onThrow = null; // set by game
     this._lastCharging = false;
     this._attach();
@@ -77,9 +77,17 @@ export class Input {
     }
   }
 
-  /** Neutral controls for the next delivery — players can't repeat a throw. */
-  resetControls() {
-    this.controls.position = 0;
+  /**
+   * Neutral controls for the next delivery — players can't repeat a throw.
+   * The starting position is RANDOM each delivery (skill: aim from wherever
+   * you start). startX records it so phone steering maps relative to it.
+   */
+  resetControls(randomizeStart = true) {
+    if (randomizeStart) {
+      this.controls.startX =
+        (Math.random() * 2 - 1) * TUNING.startJitter * TUNING.maxPosition;
+    }
+    this.controls.position = this.controls.startX || 0;
     this.controls.aim = 0;
     this.controls.spin = 0;
     this.controls.power = 0;

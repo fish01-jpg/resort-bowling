@@ -293,3 +293,105 @@ Round-7 review fixes (same session, before commit):
 - Correction to the round-6 note: pickup motion still contributes to swingPeak (power), since a pickup and its swing are one continuous motion — that is accepted behavior; only the aim and the ball's curve are fully protected from the carry.
 
 Round-7 final: user confirmed the 1-32 "lanes" selector counts COMPLETE GAMES (asked directly, per review). Also: accepted poses are normalized once (clamped to the steer/aim limits) at capture — the on-phone indicator, the transmitted state, and the throw all use that exact value; the host applies identical scaling to both state and throw paths (verified in onPhoneState/onPhoneThrow).
+
+Round 8 — controller feel polish, physics hardness, and the visual overhaul:
+
+Phone controller:
+- Simplified the control screen: footer is just RE-AIM + SETUP; throw mode and
+  RECENTER moved into SETUP with plain-language descriptions. Bigger tilt pad
+  and a much bigger THROW button.
+- Phone rotation is back, done right: spin comes from WRIST TWIST at the
+  release flick (the final active motion sample, deadzone 40 deg/s, full hook
+  at 300 deg/s). Carry/pick-up rotation is overwritten and can never become
+  hook. The live smoothed twist rides the state channel so the game's aim
+  guide previews the hook while you cock your wrist. Button throws use the
+  current twist.
+
+Physics / difficulty:
+- Ball 6.0 -> 5.6 kg; pins ~1.29 -> ~1.41 kg (densities 300/1100 -> 330/1200):
+  harder to blast through the rack, strikes take a better shot.
+- hookAccel 0.5 -> 0.75: the ball visibly curves where it's spinning.
+- RANDOM STARTING POSITION each delivery (within 80% of the lane edges):
+  aiming is a skill again. Phone steering maps RELATIVE to the start (neutral
+  phone keeps the start; full tilt still reaches either edge) via
+  phoneLanePosition(); recorded/replayed online throws keep absolute
+  positions (randomization only happens in resetControls on delivery prep,
+  and online adoption only re-preps when the room revision changed).
+
+Visuals (full environment rebuild in scene.js):
+- Sunset-resort lounge interior: dark ceiling with warm light coves, terracotta
+  walls, big dusk windows (violet-to-amber sky, sun, sea shimmer), carpeted
+  approach, no more mismatched aqua sky box or outdoor palms.
+- REAL gutters: open half-pipe channels (extruded arc band) with matching
+  fixed TRIMESH colliders generated from the same cross-section — the ball
+  rolls in the channel you see. Division-cap rails close the gap between
+  gutters and walls; a dark base slab removes the voids.
+- Deep pit (-0.75) with side walls and a pinsetter housing that masks
+  everything above the pit opening: fallen pins drop out of sight instead of
+  lying visible behind the deck.
+- Working pinsetter sweep: drops in front of the rack, LIFTS standing pins
+  clear, sweeps the deadwood at deck level into the pit, rises. Standing set
+  is snapshotted before the lift (pinState is untrustworthy mid-lift).
+- Render interpolation: syncMeshes(alpha) lerps/slerps between the previous
+  and current physics step (alpha = accumulator/FIXED_DT) — no more stutter;
+  interpolation snaps on teleports (rack reset, ball placement, sweep lifts).
+
+Round 8 fixes (post-review):
+
+- phoneLanePosition: removed double scaling — the mapped value is already in
+  meters, now clamped to ±maxPosition (neutral phone preserves the random
+  start; full tilt reaches both edges, verified numerically).
+- Gutter visual/collision unified through one shared gutterCrossSection()
+  in constants.js: physics trimesh rings at the exact z endpoints (-2.8,
+  19.4), rendered band has its material thickness OUTSIDE the contact arc so
+  the ball rolls on exactly the surface you see; left channel is generated
+  directly (not mirrored) with increasing-x traversal on both sides, so
+  triangle winding faces up (Rapier 0.12 trimeshes are two-sided by
+  default — verified against the official docs — so this is belt-and-suspenders).
+  Cap wall colliders moved to x=±0.84, flush with the lining's outer rim;
+  division caps rebuilt from the rim (0.79) to the wall base.
+- Room shell extended to enclose the chase camera (z −5.75..21.25); back
+  wall sits at −5.6, behind the camera's farthest pull-back (−4.8).
+- Base slab stops at the deck end so it can't bridge the pit opening;
+  side slivers flank the pit so the shell stays gap-free.
+- Sweep: lift branch now starts at k=0 when it begins (t=0.15), and the
+  final rise phase lowers the lifted pins back to their saved settle
+  positions on EVERY path (including game-over), with exact endpoints
+  forced before the rack decision.
+- Phone wrist twist: rotationRate.alpha (rotation about the phone's own
+  screen normal) is the twist measure — pitch/carry motion has no alpha
+  component, so carrying the phone can't read as hook; the sign follows
+  the steering wheel (twist left = hook left). The series is invalidated
+  immediately on a missing/non-finite sample, on turn handover, RE-AIM,
+  mode change, RECENTER, disconnect, and off-turn — a sensor dropout
+  reads as zero spin, never a replayed flick (plus a 400ms freshness
+  watchdog).
+- Mirrored phone buttons: bare "−/+" steppers now carry contextual labels
+  (e.g. "Games −") so they can't be confused on the phone.
+
+Round 8 fixes (review pass 2):
+
+- Phone twist: rotationRate.alpha IS the screen-normal rotation in the
+  phone's own frame — pitch/carry can't contaminate it, no world projection
+  needed (the attempted calibrated-frame projection was removed: it mixed up
+  the rotation-rate component order and was pitch-dependent anyway). ONE
+  smoothed series now feeds both the aim-guide preview and the release
+  capture; button throws use the same series. Stale data reads as zero
+  (freshness gate, 400ms) and history is cleared on turn handover,
+  off-turn, and RECENTER.
+- Gutter band outline now contains BOTH full arcs (26 points): every
+  collision contact point is on the visible outline, no diagonal rim join.
+- Gutter trimesh restored bounded longitudinal subdivisions (0.25m target,
+  uniform step, last ring exactly at deckEndZ) instead of two 22m rings.
+- Syntax checks now loop node --check per file (glob form only checked
+  the first file).
+
+Round 8 fixes (review pass 3):
+
+- Twist invalidation is now a dedicated resetTwist() helper, invoked the
+  moment a motion event arrives with missing/non-finite rotationRate.alpha
+  (before the acceleration early-return), plus on fresh turn, turn handover,
+  RE-AIM, mode change, RECENTER, disconnect, and every off-turn motion
+  event — never only on the 400ms watchdog. Missing samples read as zero
+  spin; a valid zero sample cannot revive the old snapshot (releaseTwist is
+  only reassigned from live samples while a swing is active).

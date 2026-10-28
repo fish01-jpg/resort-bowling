@@ -473,12 +473,29 @@ async function boot() {
     if (game.phase !== 'ready' || !input.enabled) return;
     if (!slotControlsActivePlayer(slot)) return; // not this phone's bowler
     if (net && !onlineMyTurn()) return;
+    // live wrist twist previews on the aim guide
+    if (m.spin != null) {
+      input.controls.spin = THREE.MathUtils.clamp(m.spin, -1, 1);
+    }
     if (phoneRearm.has(slot)) {
       if (Math.abs(m.steer) < 0.12 && Math.abs(m.aim) < 0.15) phoneRearm.delete(slot);
       else return; // hold the release pose until the phone comes back to neutral
     }
-    input.controls.position = clamp01(m.steer / 0.35, -1, 1) * TUNING.maxPosition;
+    input.controls.position = phoneLanePosition(m.steer);
     input.controls.aim = clamp01(m.aim / 0.45, -1, 1) * TUNING.maxAim;
+  }
+
+  /**
+   * Map a phone steer value to a lane position RELATIVE to this delivery's
+   * random start: a neutral phone preserves the start; full tilt still
+   * reaches either edge of the lane.
+   */
+  function phoneLanePosition(steer) {
+    const startX = input.controls.startX || 0;
+    const t = clamp01(steer / 0.35, -1, 1);
+    // pos is already in meters — clamp to the lane edges, no second scaling
+    const pos = startX + t * (t >= 0 ? TUNING.maxPosition - startX : TUNING.maxPosition + startX);
+    return THREE.MathUtils.clamp(pos, -TUNING.maxPosition, TUNING.maxPosition);
   }
 
   /** Swing release (or THROW button) from a phone. */
@@ -486,10 +503,10 @@ async function boot() {
     if (!canThrowForSlot(slot)) return;
     // use the orientation captured AT RELEASE (carried by the throw packet),
     // not whichever 30Hz tilt sample happened to arrive last
-    const position = clamp01(m.steer / 0.35, -1, 1) * TUNING.maxPosition;
+    const position = phoneLanePosition(m.steer);
     const aim = clamp01(m.aim / 0.45, -1, 1) * TUNING.maxAim;
     const power = clamp01(m.power, 0.12, 1);
-    const spin = clamp01(m.spin, -1, 1);
+    const spin = clamp01(m.spin, -1, 1); // wrist twist at release
     game._throw({ position, aim, power, spin });
     phoneRearm.set(slot, Date.now()); // tilt steering pauses until back near neutral
     broadcastPhonePhase();
@@ -735,7 +752,23 @@ async function boot() {
             || (b.dataset.count != null ? `bowlers-${b.dataset.count}` : null)
             || (b.dataset.phones != null ? `phones-${b.dataset.phones}` : null)
             || `${scrId}-btn-${idx++}`;
-          out.push({ key, label: (b.textContent || '').trim().slice(0, 24), el: b });
+          // contextual labels: a bare “−/+” is meaningless once mirrored onto
+          // a phone next to other steppers — name what the button changes
+          let label = (b.textContent || '').trim().slice(0, 24);
+          if (/^[−+]$/.test(label)) {
+            const row = b.parentElement;
+            let name = null;
+            const inRow = row.querySelector('.menu-label');
+            if (inRow) name = inRow.textContent;
+            else if (row.previousElementSibling?.classList.contains('menu-label')) {
+              name = row.previousElementSibling.textContent;
+            }
+            if (name) {
+              name = name.replace(/^How many\s+/i, '').replace(/\?+$/, '').trim();
+              label = `${name.charAt(0).toUpperCase()}${name.slice(1)} ${label}`;
+            }
+          }
+          out.push({ key, label, el: b });
         });
       }
     } else {
@@ -816,7 +849,9 @@ async function boot() {
   }
 
   function render() {
-    game.syncMeshes();
+    // interpolate between physics steps for buttery motion
+    const alpha = FIXED_DT > 0 ? Math.min(1, accumulator / FIXED_DT) : 1;
+    game.syncMeshes(alpha);
     scene.renderer.render(scene.scene, scene.camera);
   }
 

@@ -54,16 +54,19 @@
     <div id="game-buttons" class="game-buttons hidden"></div>
 
     <footer class="phone-bottom">
-      <button id="cal-btn" class="phone-btn small">RECENTER</button>
       <button id="reaim-btn" class="phone-btn small">RE-AIM</button>
-      <button id="mode-btn" class="phone-btn small">MODE: SWING</button>
       <button id="setup-btn" class="phone-btn small">SETUP</button>
     </footer>
   </section>
 
-  <!-- 4. settings: control scheme + sensitivity presets -->
+  <!-- 4. settings: mode, recenter, control scheme + sensitivity -->
   <section id="settings-screen" class="phone-screen">
     <h1 class="phone-title">SETUP</h1>
+    <p class="phone-label">Throw mode</p>
+    <button id="mode-btn" class="phone-btn">MODE: SWING</button>
+    <p class="settings-desc">Swing the phone like a ball, or tap THROW.</p>
+    <button id="cal-btn" class="phone-btn">RECENTER PHONE</button>
+    <p class="settings-desc">Hold the phone in your stance, then recenter.</p>
     <p class="phone-label">Control scheme</p>
     <div class="seg-row" id="scheme-row">
       <button class="seg-btn" data-scheme="wheel">WHEEL</button>

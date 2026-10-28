@@ -1,6 +1,10 @@
 import { Game } from './scoring.js';
+import * as THREE from 'https://esm.sh/three@0.169.0';
 import { PIN_SPOTS, TUNING, LANE } from './constants.js';
 import { Match, playerProgress, FULL_RACK } from './match.js';
+
+const _qA = new THREE.Quaternion();
+const _qB = new THREE.Quaternion();
 
 // Phases: 'ready' (aim/charge) -> 'rolling' -> 'settling' -> 'sweep' -> 'ready' | 'gameover'
 // Modes: solo (no match/net), local hot-seat (match), online (net).
@@ -90,11 +94,7 @@ export class BowlingGame {
 
   _resetBall() {
     const c = this.input.controls;
-    this.physics.ballBody.setTranslation(
-      { x: c.position, y: LANE.ballRadius, z: -1.8 }, true
-    );
-    this.physics.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    this.physics.ballBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.physics.resetBall(c.position || 0);
   }
 
   _throw(controls) {
@@ -198,14 +198,29 @@ export class BowlingGame {
     if (this.phase === 'sweep') {
       this._sweepT += dt;
       const t = Math.min(1, this._sweepT / TUNING.sweepDuration);
-      // sweep bar: lower, travel back, rise
+      // pinsetter sweep: drop in front of the rack, lift any standing pins
+      // clear, sweep the deadwood back into the pit, rise.
       const sweep = this.scene.sweep;
       const zStart = 17.9, zEnd = 20.8;
-      if (t < 0.25) {
-        sweep.position.set(0, 2.2 - (2.2 - 0.55) * (t / 0.25), zStart);
-      } else if (t < 0.85) {
-        const k = (t - 0.25) / 0.6;
-        sweep.position.set(0, 0.55, zStart + (zEnd - zStart) * k);
+      const liftPin = (idx, k) => {
+        const b = this.physics.pinBodies[idx];
+        if (!b) return;
+        const pos = b.translation();
+        const y0 = this._sweepLift.get(idx) ?? 0;
+        b.setTranslation({ x: pos.x, y: y0 + (0.75 - y0) * k, z: pos.z }, true);
+      };
+      if (t < 0.15) {
+        const k = t / 0.15;
+        sweep.position.set(0, 2.2 - (2.2 - 0.19) * k, zStart);
+      } else if (t < 0.3) {
+        // pinsetter lifts the standing pins clear of the sweep bar (from rest,
+        // so k starts at exactly 0 when the branch begins)
+        const k = (t - 0.15) / 0.15;
+        for (const idx of this._sweepLift.keys()) liftPin(idx, k);
+        sweep.position.set(0, 0.19, zStart);
+      } else if (t < 0.8) {
+        const k = (t - 0.3) / 0.5;
+        sweep.position.set(0, 0.19, zStart + (zEnd - zStart) * k);
         // fallen pins get dragged / dropped as the bar passes
         for (const idx of this._sweepFallen) {
           const st = this.physics.pinState(idx);
@@ -216,10 +231,22 @@ export class BowlingGame {
           }
         }
       } else {
-        const k = (t - 0.85) / 0.15;
-        sweep.position.set(0, 0.55 + (2.2 - 0.55) * k, zEnd);
+        // bar rises while the lifted pins come back down to their saved
+        // positions — even on game-ending paths, so nothing is left floating
+        const k = (t - 0.8) / 0.2;
+        for (const idx of this._sweepLift.keys()) liftPin(idx, 1 - k);
+        sweep.position.set(0, 0.19 + (2.2 - 0.19) * k, zEnd);
       }
-      if (t >= 1) this._afterSweep();
+      // the sweep teleports bodies (pin lift) — keep interpolation snapped
+      // so lifted pins don't smear between their old and new poses
+      this.physics.snapInterpolation();
+      if (t >= 1) {
+        // force exact endpoints before the rack decision reads positions
+        for (const idx of this._sweepLift.keys()) liftPin(idx, 0);
+        sweep.position.set(0, 2.2, zEnd);
+        this.physics.snapInterpolation();
+        this._afterSweep();
+      }
     }
   }
 
@@ -243,6 +270,15 @@ export class BowlingGame {
     this.phase = 'sweep';
     this._sweepT = 0;
     this._swept = [];
+    // snapshot the standing set NOW: the sweep lifts pins (pinState changes),
+    // so the rack decision must not re-read it afterwards
+    this._sweepStanding = [];
+    this._sweepLift = new Map();
+    for (let i = 0; i < 10; i++) {
+      const st = this.physics.pinState(i);
+      this._sweepStanding.push(st.standing);
+      if (st.standing) this._sweepLift.set(i, st.y);
+    }
 
     if (this.net && !this.replay) {
       // online: the room is the single scoring authority — submit and let the
@@ -371,10 +407,9 @@ export class BowlingGame {
       this.physics.resetRack(PIN_SPOTS.map(() => true));
       this._showAllPins();
     } else {
-      // keep the pins that are still standing
-      const flags = [];
-      for (let i = 0; i < 10; i++) flags.push(this.physics.pinState(i).standing);
-      this.physics.resetRack(flags);
+      // keep the pins that were standing when the sweep started (they were
+      // lifted by the pinsetter — pinState can't be trusted anymore)
+      this.physics.resetRack(this._sweepStanding.slice());
       this._showAllPins();
     }
 
@@ -447,13 +482,28 @@ export class BowlingGame {
     );
   }
 
-  /** Sync Three.js meshes with physics bodies (called every render frame). */
+  /** Sync Three.js meshes with physics bodies (call every render frame).
+   * alpha ∈ [0,1] interpolates between the previous and current physics
+   * step — smooth motion at any frame rate (no stepping stutter). */
   syncMeshes(alpha = 1) {
     const p = this.physics;
     const bp = p.ballBody.translation();
     const bq = p.ballBody.rotation();
-    this.scene.ball.position.set(bp.x, bp.y, bp.z);
-    this.scene.ball.quaternion.set(bq.x, bq.y, bq.z, bq.w);
+    const prevB = p.prevTransform('ball');
+    if (prevB && alpha < 1) {
+      this.scene.ball.position.set(
+        prevB.x + (bp.x - prevB.x) * alpha,
+        prevB.y + (bp.y - prevB.y) * alpha,
+        prevB.z + (bp.z - prevB.z) * alpha
+      );
+      _qA.set(prevB.qx, prevB.qy, prevB.qz, prevB.qw);
+      _qB.set(bq.x, bq.y, bq.z, bq.w);
+      _qA.slerp(_qB, alpha);
+      this.scene.ball.quaternion.copy(_qA);
+    } else {
+      this.scene.ball.position.set(bp.x, bp.y, bp.z);
+      this.scene.ball.quaternion.set(bq.x, bq.y, bq.z, bq.w);
+    }
     for (let i = 0; i < 10; i++) {
       const st = p.pinState(i);
       const m = this.scene.pins[i];
@@ -462,9 +512,22 @@ export class BowlingGame {
         const pos = b.translation();
         const rot = b.rotation();
         m.visible = true;
-        // lathe geometry starts at the pin base = body origin
-        m.position.set(pos.x, pos.y, pos.z);
-        m.quaternion.set(rot.x, rot.y, rot.z, rot.w);
+        const prev = p.prevTransform(i);
+        if (prev && alpha < 1) {
+          m.position.set(
+            prev.x + (pos.x - prev.x) * alpha,
+            prev.y + (pos.y - prev.y) * alpha,
+            prev.z + (pos.z - prev.z) * alpha
+          );
+          _qA.set(prev.qx, prev.qy, prev.qz, prev.qw);
+          _qB.set(rot.x, rot.y, rot.z, rot.w);
+          _qA.slerp(_qB, alpha);
+          m.quaternion.copy(_qA);
+        } else {
+          // lathe geometry starts at the pin base = body origin
+          m.position.set(pos.x, pos.y, pos.z);
+          m.quaternion.set(rot.x, rot.y, rot.z, rot.w);
+        }
       } else {
         m.visible = false;
       }

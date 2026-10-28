@@ -1,5 +1,5 @@
 import * as THREE from 'https://esm.sh/three@0.169.0';
-import { LANE, PIN_SPOTS, COLORS } from './constants.js';
+import { LANE, PIN_SPOTS, gutterCrossSection } from './constants.js';
 
 // ---------- procedural textures (pure canvas — no CORS/taint concerns) ----------
 
@@ -72,29 +72,33 @@ function pinBandTexture() {
   return tex;
 }
 
-function sunsetWindowTexture() {
+/** Dusk outside the windows: deep violet sky into a burning horizon. */
+function duskWindowTexture() {
   const c = makeCanvas(256, 384);
   const ctx = c.getContext('2d');
   const g = ctx.createLinearGradient(0, 0, 0, c.height);
-  g.addColorStop(0, '#ffd9a0');
-  g.addColorStop(0.45, '#ff9d6e');
-  g.addColorStop(1, '#c95d7c');
+  g.addColorStop(0.0, '#241444');
+  g.addColorStop(0.35, '#5b2a63');
+  g.addColorStop(0.62, '#c2485e');
+  g.addColorStop(0.82, '#ff8c42');
+  g.addColorStop(1.0, '#ffd9a0');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, c.width, c.height);
-  // sun
-  ctx.fillStyle = 'rgba(255,240,200,0.9)';
+  // low sun
+  ctx.fillStyle = 'rgba(255,242,204,0.95)';
   ctx.beginPath();
-  ctx.arc(c.width / 2, c.height * 0.62, 54, 0, Math.PI * 2);
+  ctx.arc(c.width * 0.68, c.height * 0.74, 30, 0, Math.PI * 2);
   ctx.fill();
-  // palm silhouette
-  ctx.fillStyle = 'rgba(70,30,50,0.55)';
-  ctx.fillRect(c.width * 0.18, c.height * 0.45, 8, c.height * 0.4);
-  for (let a = 0; a < 6; a++) {
-    ctx.save();
-    ctx.translate(c.width * 0.18 + 4, c.height * 0.45);
-    ctx.rotate((-70 + a * 26) * Math.PI / 180);
-    ctx.fillRect(0, -3, 70, 6);
-    ctx.restore();
+  // cloud streaks
+  ctx.fillStyle = 'rgba(60,30,70,0.45)';
+  for (let i = 0; i < 5; i++) {
+    const y = c.height * (0.18 + i * 0.11);
+    ctx.fillRect(c.width * (0.05 + (i % 2) * 0.2), y, c.width * 0.7, 6 + i * 2);
+  }
+  // sea shimmer
+  ctx.fillStyle = 'rgba(255,180,120,0.5)';
+  for (let i = 0; i < 8; i++) {
+    ctx.fillRect(c.width * Math.random() * 0.8, c.height * (0.86 + i * 0.017), 10 + Math.random() * 30, 2);
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -119,6 +123,36 @@ function signTexture() {
   return tex;
 }
 
+/** Patterned resort carpet for the approach area. */
+function carpetTexture() {
+  const c = makeCanvas(256, 256);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#1f3a38';
+  ctx.fillRect(0, 0, 256, 256);
+  ctx.strokeStyle = 'rgba(247,177,103,0.35)';
+  ctx.lineWidth = 3;
+  for (let y = 0; y < 256; y += 64) {
+    for (let x = 0; x < 256; x += 64) {
+      ctx.beginPath();
+      ctx.moveTo(x + 32, y + 6);
+      ctx.lineTo(x + 58, y + 32);
+      ctx.lineTo(x + 32, y + 58);
+      ctx.lineTo(x + 6, y + 32);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(14,125,134,0.5)';
+      ctx.beginPath();
+      ctx.arc(x + 32, y + 32, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(3, 2);
+  return tex;
+}
+
 // ---------- pin profile ----------
 
 const PIN_PROFILE = [
@@ -128,36 +162,15 @@ const PIN_PROFILE = [
 
 function buildPinMesh() {
   const pts = PIN_PROFILE.map(([x, y]) => new THREE.Vector2(x, y));
-  const geo = new THREE.LatheGeometry(pts, 24);
+  const geo = new THREE.LatheGeometry(pts, 32);
   const mat = new THREE.MeshStandardMaterial({
     map: pinBandTexture(),
-    roughness: 0.35,
+    roughness: 0.32,
     metalness: 0.0,
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.castShadow = true;
   return mesh;
-}
-
-function buildPalm() {
-  const g = new THREE.Group();
-  const trunkMat = new THREE.MeshStandardMaterial({ color: '#8a5a3a', roughness: 0.9 });
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 2.2, 8), trunkMat);
-  trunk.position.y = 1.1;
-  trunk.castShadow = true;
-  g.add(trunk);
-  const leafMat = new THREE.MeshStandardMaterial({ color: '#2e7d4f', roughness: 0.8 });
-  for (let i = 0; i < 6; i++) {
-    const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.55, 8, 6), leafMat);
-    leaf.scale.set(1, 0.22, 0.5);
-    const a = (i / 6) * Math.PI * 2;
-    leaf.position.set(Math.cos(a) * 0.55, 2.25, Math.sin(a) * 0.55);
-    leaf.rotation.y = -a;
-    leaf.rotation.z = 0.35;
-    leaf.castShadow = true;
-    g.add(leaf);
-  }
-  return g;
 }
 
 // ---------- the scene ----------
@@ -169,23 +182,24 @@ export function createScene(canvasParent) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.1;
   canvasParent.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(COLORS.sky);
-  scene.fog = new THREE.Fog(COLORS.sky, 26, 60);
+  scene.background = new THREE.Color('#1a1018');
+  scene.fog = new THREE.Fog('#241a20', 26, 64);
 
   const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 100);
   camera.position.set(0, 1.5, -3.2);
   camera.lookAt(0, 0.4, 8);
 
-  // lights
-  const hemi = new THREE.HemisphereLight('#fff3e0', '#0f2e2b', 0.85);
+  // ---- lights: warm lounge interior, dusk outside ----
+  const hemi = new THREE.HemisphereLight('#ffd9b8', '#2b1d18', 0.5);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight('#ffe3b0', 1.9);
-  sun.position.set(2.5, 5.5, 2.0);
-  sun.target.position.set(0, 0, 10);
+  // low sun raking in through the windows
+  const sun = new THREE.DirectionalLight('#ffb36b', 1.5);
+  sun.position.set(3.2, 3.4, 4.5);
+  sun.target.position.set(-0.4, 0, 12);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
   sun.shadow.camera.left = -4;
@@ -193,74 +207,159 @@ export function createScene(canvasParent) {
   sun.shadow.camera.top = 24;
   sun.shadow.camera.bottom = -4;
   sun.shadow.camera.near = 0.5;
-  sun.shadow.camera.far = 24;
+  sun.shadow.camera.far = 26;
   scene.add(sun, sun.target);
+  // warm downlights along the lane
+  for (const z of [2, 9, 15.5]) {
+    const p = new THREE.PointLight('#ffd9a0', 14, 9, 2);
+    p.position.set(0, 2.7, z);
+    scene.add(p);
+  }
+  // pin deck spot — the rack is the star of the show
+  const spot = new THREE.SpotLight('#fff2dc', 60, 12, 0.5, 0.5, 1.6);
+  spot.position.set(0, 2.8, 16.6);
+  spot.target.position.set(0, 0.2, LANE.pinZ + 0.4);
+  spot.castShadow = true;
+  spot.shadow.mapSize.set(1024, 1024);
+  scene.add(spot, spot.target);
 
-  // lane + approach — must cover the release point (z=-1.8) and the full rack
   const laneLen = LANE.deckEndZ - LANE.approachStartZ;
-  const laneMat = new THREE.MeshStandardMaterial({ map: woodLaneTexture(), roughness: 0.32 });
+  const laneCz = (LANE.approachStartZ + LANE.deckEndZ) / 2;
+
+  // ---- lane (top surface at y=0) ----
+  const laneMat = new THREE.MeshStandardMaterial({ map: woodLaneTexture(), roughness: 0.28 });
   const lane = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.1, laneLen), laneMat);
-  lane.position.set(0, -0.05, (LANE.approachStartZ + LANE.deckEndZ) / 2);
+  lane.position.set(0, -0.05, laneCz);
   lane.receiveShadow = true;
   scene.add(lane);
 
-  // gutters
-  const gutterMat = new THREE.MeshStandardMaterial({ color: '#3a4a4f', roughness: 0.5 });
+  // ---- real gutters: open half-pipe channels (rim meets the lane edge) ----
+  const gutterMat = new THREE.MeshStandardMaterial({
+    color: '#151d1f', roughness: 0.3, metalness: 0.45,
+  });
   for (const side of [-1, 1]) {
-    const g = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.1, laneLen), gutterMat);
-    g.position.set(side * 0.645, LANE.gutterFloorY - 0.05, (LANE.approachStartZ + LANE.deckEndZ) / 2);
+    // a curved band: the contact arc plus material thickness OUTSIDE it, so
+    // the ball rolls on exactly the surface the physics trimesh uses
+    const shape = new THREE.Shape();
+    const band = gutterCrossSection(side, 'band');
+    band.forEach(([x, y], i) => {
+      if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+    });
+    shape.closePath();
+    const geo = new THREE.ExtrudeGeometry(shape, {
+      depth: laneLen, steps: 1, bevelEnabled: false,
+    });
+    const g = new THREE.Mesh(geo, gutterMat);
+    g.position.z = LANE.approachStartZ;
     g.receiveShadow = true;
     scene.add(g);
   }
 
-  // pit (dark end, starts at deckEndZ)
-  const pitMat = new THREE.MeshStandardMaterial({ color: '#101c1a', roughness: 1 });
-  const pit = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.05, 2.4), pitMat);
-  pit.position.set(0, -0.33, LANE.pitZ + 1.1);
-  scene.add(pit);
-  const curtain = new THREE.Mesh(
-    new THREE.BoxGeometry(2.4, 1.6, 0.1),
-    new THREE.MeshStandardMaterial({ color: '#12312d', roughness: 1 })
-  );
-  curtain.position.set(0, 0.5, LANE.pitZ + 2.3);
-  scene.add(curtain);
-
-  // sign
-  const sign = new THREE.Mesh(
-    new THREE.BoxGeometry(2.6, 0.65, 0.06),
-    new THREE.MeshStandardMaterial({ map: signTexture(), roughness: 0.8 })
-  );
-  sign.position.set(0, 1.9, LANE.pitZ + 2.2);
-  scene.add(sign);
-
-  // side walls + sunset windows
-  const wallMat = new THREE.MeshStandardMaterial({ color: '#bfe0d8', roughness: 0.95 });
-  const winTex = sunsetWindowTexture();
+  // ---- division caps: raised rails from the gutter rim to the walls ----
+  const capMat = new THREE.MeshStandardMaterial({ color: '#4a3423', roughness: 0.55 });
   for (const side of [-1, 1]) {
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.4, 24), wallMat);
-    wall.position.set(side * 1.15, 1.2, 8);
+    // from the gutter lining's outer rim (0.79) to the wall base (1.10)
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.2, laneLen), capMat);
+    cap.position.set(side * 0.945, 0.0, laneCz);
+    cap.receiveShadow = true;
+    cap.castShadow = true;
+    scene.add(cap);
+  }
+
+  // ---- room: side walls with dusk windows, ceiling with light coves ----
+  const wallMat = new THREE.MeshStandardMaterial({ color: '#8a6350', roughness: 0.95 });
+  const winTex = duskWindowTexture();
+  // the shell must enclose the chase camera (which pulls back to z ≈ -4.8)
+  const roomZmin = -5.75, roomZmax = 21.25;
+  const roomLen = roomZmax - roomZmin, roomCz = (roomZmin + roomZmax) / 2;
+  for (const side of [-1, 1]) {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(0.35, 3.0, roomLen), wallMat);
+    wall.position.set(side * 1.275, 1.5, roomCz);
+    wall.receiveShadow = true;
     scene.add(wall);
-    for (const z of [2, 8, 14]) {
+    for (const z of [1.5, 8, 14.5]) {
       const win = new THREE.Mesh(
-        new THREE.BoxGeometry(0.02, 1.3, 1.6),
-        new THREE.MeshStandardMaterial({ map: winTex, emissive: '#ff9d6e', emissiveIntensity: 0.55, emissiveMap: winTex })
+        new THREE.BoxGeometry(0.04, 1.7, 1.9),
+        new THREE.MeshStandardMaterial({ map: winTex, emissive: '#ff8c42', emissiveIntensity: 0.7, emissiveMap: winTex })
       );
-      win.position.set(side * 1.09, 1.45, z);
+      win.position.set(side * 1.09, 1.5, z);
       scene.add(win);
     }
   }
+  // back wall behind the player — BEHIND the chase camera's farthest pull-back
+  const backWall = new THREE.Mesh(new THREE.BoxGeometry(2.9, 3.0, 0.3), wallMat);
+  backWall.position.set(0, 1.5, roomZmin + 0.15);
+  scene.add(backWall);
 
-  // palms
-  const palm1 = buildPalm(); palm1.position.set(-1.7, -0.1, 3);
-  const palm2 = buildPalm(); palm2.position.set(1.7, -0.1, 12); palm2.scale.set(1.2, 1.2, 1.2);
-  scene.add(palm1, palm2);
+  // ceiling
+  const ceilMat = new THREE.MeshStandardMaterial({ color: '#241a16', roughness: 0.9 });
+  const ceiling = new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.12, roomLen), ceilMat);
+  ceiling.position.set(0, 3.02, roomCz);
+  scene.add(ceiling);
+  // light coves: warm emissive strips running down the lane
+  const coveMat = new THREE.MeshBasicMaterial({ color: '#ffd9a0' });
+  for (const side of [-1, 1]) {
+    const cove = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.02, roomLen - 1), coveMat);
+    cove.position.set(side * 0.85, 2.95, roomCz);
+    scene.add(cove);
+  }
 
-  // ball
+  // carpeted approach
+  const carpet = new THREE.Mesh(
+    new THREE.BoxGeometry(2.9, 0.02, 1.0),
+    new THREE.MeshStandardMaterial({ map: carpetTexture(), roughness: 0.95 })
+  );
+  carpet.position.set(0, -0.011, -3.3);
+  carpet.receiveShadow = true;
+  scene.add(carpet);
+  // dark base slab under everything (no voids between structures) —
+  // STOPS at the deck end so it cannot bridge the pit opening
+  const slabMat = new THREE.MeshStandardMaterial({ color: '#161210', roughness: 1 });
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(2.9, 0.1, LANE.deckEndZ - roomZmin),
+    slabMat
+  );
+  slab.position.set(0, -0.36, (roomZmin + LANE.deckEndZ) / 2);
+  scene.add(slab);
+  // side slivers beside the pit, so the shell still has no gaps
+  for (const side of [-1, 1]) {
+    const sliver = new THREE.Mesh(
+      new THREE.BoxGeometry(0.3, 0.1, roomZmax - LANE.deckEndZ),
+      slabMat
+    );
+    sliver.position.set(side * 1.3, -0.36, (LANE.deckEndZ + roomZmax) / 2);
+    scene.add(sliver);
+  }
+
+  // ---- the pit + pinsetter housing (fallen pins drop out of sight) ----
+  const pitMat = new THREE.MeshStandardMaterial({ color: '#07090a', roughness: 1 });
+  const pitFloor = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.1, 2.4), pitMat);
+  pitFloor.position.set(0, LANE.pitFloorY - 0.05, LANE.pitZ + 1.2);
+  scene.add(pitFloor);
+  for (const side of [-1, 1]) {
+    const pitWall = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 2.4), pitMat);
+    pitWall.position.set(side * 1.02, LANE.pitFloorY + 0.4, LANE.pitZ + 1.2);
+    scene.add(pitWall);
+  }
+  // pinsetter housing: masks everything above the pit opening, carries the sign
+  const housingMat = new THREE.MeshStandardMaterial({ color: '#12312d', roughness: 0.7, metalness: 0.15 });
+  const housing = new THREE.Mesh(new THREE.BoxGeometry(2.9, 2.45, 1.9), housingMat);
+  housing.position.set(0, 1.775, LANE.pitZ + 1.1);
+  housing.castShadow = true;
+  scene.add(housing);
+  const sign = new THREE.Mesh(
+    new THREE.BoxGeometry(2.35, 0.6, 0.06),
+    new THREE.MeshStandardMaterial({ map: signTexture(), roughness: 0.8 })
+  );
+  sign.position.set(0, 2.1, LANE.pitZ + 0.13);
+  scene.add(sign);
+
+  // ---- ball ----
   const ball = new THREE.Mesh(
     new THREE.SphereGeometry(LANE.ballRadius, 48, 32),
     new THREE.MeshPhysicalMaterial({
-      color: '#0d6e75', roughness: 0.22, metalness: 0.05,
-      clearcoat: 1, clearcoatRoughness: 0.15,
+      color: '#0d6e75', roughness: 0.18, metalness: 0.05,
+      clearcoat: 1, clearcoatRoughness: 0.12,
     })
   );
   ball.castShadow = true;
@@ -273,28 +372,37 @@ export function createScene(canvasParent) {
     ball.add(h);
   }
 
-  // pins
+  // ---- pins ----
   const pins = PIN_SPOTS.map(() => buildPinMesh());
   pins.forEach((p) => scene.add(p));
 
-  // sweep bar
-  const sweep = new THREE.Mesh(
+  // ---- sweep bar (pinsetter sweep: dark body, accent stripe) ----
+  const sweep = new THREE.Group();
+  const sweepBody = new THREE.Mesh(
     new THREE.BoxGeometry(1.15, 0.28, 0.12),
+    new THREE.MeshStandardMaterial({ color: '#1c2b2e', roughness: 0.5, metalness: 0.2 })
+  );
+  sweepBody.castShadow = true;
+  sweep.add(sweepBody);
+  const sweepStripe = new THREE.Mesh(
+    new THREE.BoxGeometry(1.15, 0.06, 0.13),
     new THREE.MeshStandardMaterial({ color: '#ff6b4a', roughness: 0.4 })
   );
+  sweepStripe.position.y = 0.08;
+  sweep.add(sweepStripe);
   sweep.position.set(0, 2.2, 17.9);
-  sweep.castShadow = true;
   scene.add(sweep);
 
-  // sky gradient dome (canvas texture on an inverted sphere)
+  // ---- dusk sky dome (seen through the windows) ----
   {
     const c = makeCanvas(16, 256);
     const ctx = c.getContext('2d');
     const grad = ctx.createLinearGradient(0, 0, 0, 256);
-    grad.addColorStop(0.0, '#8fcdc0');   // zenith aqua
-    grad.addColorStop(0.42, '#cfe9df'); // mid sky
-    grad.addColorStop(0.58, '#ffdcb2');  // warm horizon band
-    grad.addColorStop(1.0, '#ffbf94');
+    grad.addColorStop(0.0, '#1d1440');
+    grad.addColorStop(0.35, '#5b2a63');
+    grad.addColorStop(0.6, '#c2485e');
+    grad.addColorStop(0.82, '#ff8c42');
+    grad.addColorStop(1.0, '#ffd9a0');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 16, 256);
     const tex = new THREE.CanvasTexture(c);
@@ -314,9 +422,9 @@ export function createScene(canvasParent) {
     const n = 16;
     for (let i = 0; i < n; i++) {
       const mat = new THREE.MeshBasicMaterial({
-        color: '#173f3a',
+        color: '#ffd9a0',
         transparent: true,
-        opacity: 0.55 - (i / n) * 0.45,
+        opacity: 0.75 - (i / n) * 0.55,
         depthWrite: false,
       });
       const dot = new THREE.Mesh(new THREE.CircleGeometry(0.035, 12), mat);

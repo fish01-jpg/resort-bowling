@@ -647,8 +647,11 @@ kbd {
 .phone-btn:active { transform: translateY(2px); }
 .phone-btn.small { min-width: 140px; padding: 10px 14px; font-size: 13px; }
 .phone-btn.throw {
+  min-width: 260px;
+  padding: 20px 24px;
+  font-size: 20px;
   background: linear-gradient(180deg, #ff9d7a, #e76f51);
-  box-shadow: 0 6px 18px rgba(231, 111, 81, 0.4);
+  box-shadow: 0 8px 24px rgba(231, 111, 81, 0.45);
 }
 .phone-btn:disabled { opacity: 0.45; }
 
@@ -701,7 +704,7 @@ kbd {
 .tilt-stage.hidden { display: none; }
 .tilt-stage {
   position: relative;
-  width: min(78vw, 300px);
+  width: min(88vw, 340px);
   aspect-ratio: 1;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.05);

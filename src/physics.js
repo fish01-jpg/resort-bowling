@@ -1,6 +1,6 @@
 import RAPIER from 'https://esm.sh/@dimforge/rapier3d-compat@0.12.0';
 import * as THREE from 'https://esm.sh/three@0.169.0';
-import { LANE, PIN_SPOTS, TUNING } from './constants.js';
+import { LANE, PIN_SPOTS, TUNING, gutterCrossSection } from './constants.js';
 
 const V = new THREE.Vector3();
 
@@ -38,22 +38,59 @@ export class Physics {
     // lane + approach (top surface at y=0) — must support the release point
     // AND the full pin rack (rear row at z≈19.14)
     add(RAPIER.ColliderDesc.cuboid(LANE.halfWidth, 0.05, laneLen / 2), 0, -0.05, laneCz, 0.045);
-    // gutters (floor top at gutterFloorY)
+    // gutters: trimesh half-pipe channels that EXACTLY match the rendered
+    // geometry — the ball rolls in the channel you see
+    this._buildGutterTrimesh(-1);
+    this._buildGutterTrimesh(1);
     for (const side of [-1, 1]) {
-      add(
-        RAPIER.ColliderDesc.cuboid(0.12, 0.05, laneLen / 2),
-        side * 0.645, LANE.gutterFloorY - 0.05, laneCz, 0.1
-      );
-      // gutter outer wall
-      add(RAPIER.ColliderDesc.cuboid(0.05, 0.25, laneLen / 2), side * 0.80, -0.15, laneCz, 0.1);
+      // gutter outer wall (division cap) — flush with the lining's outer rim
+      add(RAPIER.ColliderDesc.cuboid(0.05, 0.25, laneLen / 2), side * 0.84, -0.15, laneCz, 0.1);
     }
     // side walls
     for (const side of [-1, 1]) {
       add(RAPIER.ColliderDesc.cuboid(0.05, 1.5, laneLen / 2 + 3.4), side * 1.15, 0.6, laneCz + 0.7, 0.1);
     }
-    // pit floor + back wall (pit starts at deckEndZ)
-    add(RAPIER.ColliderDesc.cuboid(1.3, 0.3, 1.25), 0, -0.6, LANE.pitZ + 1.25, 0.2);
-    add(RAPIER.ColliderDesc.cuboid(1.2, 1.3, 0.05), 0, 0.8, LANE.pitZ + 2.35, 0.1);
+    // deep pit (starts at deckEndZ): floor + back wall + side walls, so
+    // fallen pins and balls drop out of sight and stay in the pit
+    add(RAPIER.ColliderDesc.cuboid(1.3, 0.15, 1.25), 0, LANE.pitFloorY - 0.15, LANE.pitZ + 1.25, 0.2);
+    add(RAPIER.ColliderDesc.cuboid(1.2, 1.6, 0.05), 0, 0.4, LANE.pitZ + 2.35, 0.1);
+    for (const side of [-1, 1]) {
+      add(RAPIER.ColliderDesc.cuboid(0.05, 0.45, 1.25), side * 1.05, LANE.pitFloorY + 0.35, LANE.pitZ + 1.25, 0.1);
+    }
+  }
+
+  /**
+   * Fixed trimesh collider for one gutter's half-pipe channel, built from the
+   * SHARED gutterCrossSection() the rendered band uses — the ball rolls on
+   * exactly the surface you see. Two rings at the exact z endpoints (the
+   * channel is a straight extrusion), wound so the triangles face up.
+   */
+  _buildGutterTrimesh(side) {
+    const pts = gutterCrossSection(side, 'contact');
+    const zA = LANE.approachStartZ, zB = LANE.deckEndZ;
+    // bounded longitudinal subdivisions (no long thin triangles) with the
+    // last ring landing EXACTLY on deckEndZ: uniform step = span / ringCount
+    const rings = Math.max(2, Math.ceil((zB - zA) / 0.25));
+    const dz = (zB - zA) / rings;
+    const verts = [];
+    const indices = [];
+    const perRing = pts.length;
+    for (let r = 0; r <= rings; r++) {
+      const z = zA + r * dz;
+      for (const [x, y] of pts) verts.push(x, y, z);
+    }
+    for (let r = 0; r < rings; r++) {
+      for (let i = 0; i + 1 < perRing; i++) {
+        const a = r * perRing + i, b = a + 1, c = a + perRing, d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+    const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const col = RAPIER.ColliderDesc.trimesh(
+      new Float32Array(verts), new Uint32Array(indices)
+    );
+    col.setFriction(0.1);
+    this.world.createCollider(col, body);
   }
 
   _buildBall() {
@@ -77,10 +114,12 @@ export class Physics {
       .setLinearDamping(0.22)
       .setAngularDamping(0.35);
     const body = this.world.createRigidBody(desc);
-    // main cylinder — collision events enabled for impact sounds
+    // main cylinder — collision events enabled for impact sounds.
+    // Densities are the authoritative pin mass (~1.41 kg total: a slightly
+    // heavier pin that's harder to blast through the rack).
     const cyl = RAPIER.ColliderDesc.cylinder(LANE.pinHeight / 2 - 0.02, 0.052)
       .setTranslation(0, LANE.pinHeight / 2, 0)
-      .setDensity(300) // ~1.15 kg
+      .setDensity(330)
       .setFriction(0.5)
       .setRestitution(0.12)
       .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
@@ -88,7 +127,7 @@ export class Physics {
     // dense base slug to lower the center of mass
     const base = RAPIER.ColliderDesc.ball(0.045)
       .setTranslation(0, 0.05, 0)
-      .setDensity(1100) // ~0.42 kg
+      .setDensity(1200)
       .setFriction(0.5)
       .setRestitution(0.12)
       .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
@@ -117,6 +156,15 @@ export class Physics {
         this.pinBodies[i] = null;
       }
     }
+    this._snapPrev(); // teleports — restart interpolation cleanly
+  }
+
+  /** Place the ball for aiming (teleports; interpolation restarts cleanly). */
+  resetBall(x = 0) {
+    this.ballBody.setTranslation({ x, y: LANE.ballRadius, z: -1.8 }, true);
+    this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.ballBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this._snapPrev();
   }
 
   removePin(index) {
@@ -148,6 +196,7 @@ export class Physics {
     this.activeSpin = THREE.MathUtils.clamp(spin, -1, 1);
     this._guide = this._buildGuidePath(position, aim, speed, this.activeSpin);
     this._collisions = [];
+    this._snapPrev(); // launch is a teleport — restart interpolation cleanly
   }
 
   /**
@@ -268,6 +317,35 @@ export class Physics {
         }
       }
     }
+    this._prevBall = this._copyT(this.ballBody);
+    this._prevPins = new Map();
+    for (let i = 0; i < 10; i++) {
+      const b = this.pinBodies[i];
+      if (b) this._prevPins.set(i, this._copyT(b));
+    }
     this.world.step(this.eventQueue);
+  }
+
+  _copyT(b) {
+    const p = b.translation(), q = b.rotation();
+    return { x: p.x, y: p.y, z: p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w };
+  }
+
+  /** Previous-step transforms for render interpolation (null = snap). */
+  prevTransform(body /* 'ball' | pin index */) {
+    if (body === 'ball') return this._prevBall || null;
+    return (this._prevPins && this._prevPins.get(body)) || null;
+  }
+
+  /** Set interpolation history = current state (after teleports). */
+  snapInterpolation() { this._snapPrev(); }
+
+  _snapPrev() {
+    this._prevBall = this._copyT(this.ballBody);
+    this._prevPins = new Map();
+    for (let i = 0; i < 10; i++) {
+      const b = this.pinBodies[i];
+      if (b) this._prevPins.set(i, this._copyT(b));
+    }
   }
 }

@@ -402,13 +402,14 @@ export class PhoneClient {
     }
   }
 
-  /** Send an orientation sample (unreliable channel — latest wins on host). */
-  sendState(seq, steer, aim) {
+  /** Send an orientation sample (unreliable channel — latest wins on host).
+   *  spin = live wrist-twist preview for the aim guide. */
+  sendState(seq, steer, aim, spin = 0) {
     // state channel is created by the host; we keep a reference when opened.
-    // Field names (steer/aim) must match what the host's onState consumes.
+    // Field names (steer/aim/spin) must match what the host's onState consumes.
     if (this._stateCh && this._stateCh.readyState === 'open') {
       try {
-        this._stateCh.send(JSON.stringify({ t: 's', seq, steer, aim }));
+        this._stateCh.send(JSON.stringify({ t: 's', seq, steer, aim, spin }));
       } catch { /* closing */ }
     }
   }

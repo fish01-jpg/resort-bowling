@@ -75,6 +75,7 @@ async function connect(codeOrToken) {
       else if (kind === 'disconnected') {
         setStatus('warn', 'Connection lost — swipe down to reload');
         canThrow = false; // permission is meaningless while disconnected
+        resetTwist();
         updateThrowUI();
       }
       else if (kind === 'error') setStatus('err', 'Error: ' + (detail || ''));
@@ -86,7 +87,7 @@ async function connect(codeOrToken) {
         canThrow = !!m.canThrow;
         waitText = m.waitText || null;
         if (!canThrow) resetSwing(); // a swing must not carry across a turn
-        else if (!wasMyTurn) unlockAim(); // fresh turn: aim from scratch
+        else if (!wasMyTurn) { unlockAim(); resetTwist(); } // fresh turn: twist from scratch too
         // slot = which phone we are (1-based); phones = how many are connected
         if (m.slot) {
           slotBadge.textContent = m.phones > 1 ? `P${m.slot}/${m.phones}` : `P${m.slot}`;
@@ -196,6 +197,7 @@ function calTick() {
   qCal = calSamples[calSamples.length - 1]; // accept the newest sample
   calSamples = [];
   angles = { aim: 0, steer: 0 };
+  resetTwist(); // new grip — old twist history is void
   client && client.sendCtl({ t: 'cal' });
   setStatus('ok', 'Calibrated');
 }
@@ -214,8 +216,9 @@ const MAX_AIM = 0.45;   // radians of turn for full aim
 //   -> LIVE explicit action (the RE-AIM button, RECENTER, the mode toggle,
 //           or a fresh turn) — never motion itself, so a pick-up can never
 //           re-aim the ball.
-// Phone throws are always STRIGHT (spin 0): the ball goes exactly where
-// you aimed — gyro rotation during the carry or swing can never curve it.
+// Phone rotation comes from WRIST TWIST at the release flick (the final
+// active motion sample) — rotating the phone while carrying or picking it
+// up can never become hook; only the deliberate twist at release does.
 const SWING_ON = 4.5;    // m/s^2 linear acceleration deviation to start a swing
 const SWING_OFF = 2.5;   // ...to end it
 const MIN_ACTIVE_MS = 120;   // sustained acceleration required for a real swing
@@ -224,12 +227,16 @@ const COOLDOWN_MS = 700;
 const MAX_PEAK = 20;     // m/s^2 deviation mapped to power 1.0
 const AIM_STILL_DEV = 2.5; // hand must be this still for aim updates
 const AIM_LATCH_MS = 400;   // dwell before the aim locks for the throw
+const TWIST_DEADZONE = 40;  // deg/s — smaller wrist motion is noise, not spin
+const TWIST_FULL = 300;     // deg/s of release twist for full hook
 
 let lastDev = 0; // latest acceleration deviation (freshness for the stillness gate)
 let aimLocked = false;      // LOCKED state — aim captured, frozen
 let lockedAngles = null;    // the captured pose
 let lastLiveAngles = { steer: 0, aim: 0 }; // last live pose shown on screen
 let aimLiveSince = 0; // when the current live-aiming dwell began (0 = not aiming)
+let liveTwist = 0;    // smoothed wrist-twist rate (deg/s) — aim-guide preview
+let releaseTwist = 0;  // twist rate at the release flick (the throw's spin)
 
 function unlockAim() {
   aimLocked = false;
@@ -282,7 +289,32 @@ let swinging = false, swingStart = 0, swingPeak = 0;
 let swingActiveMs = 0; // how long the swing has actually been accelerating
 
 let lastMotionTs = 0;
+let lastTwistAt = 0;    // when a rotation sample last arrived (freshness gate)
+const TWIST_FRESH_MS = 400; // older than this = stale, spin reads 0
+
+/**
+ * Invalidate the twist series: missing sensor data must read as zero spin.
+ * Called the moment a sample is unusable, on turn handover, RE-AIM, mode
+ * change, RECENTER, and disconnect — never only on the timeout below.
+ */
+function resetTwist() {
+  liveTwist = 0;
+  releaseTwist = 0;
+  lastTwistAt = 0; // the watchdog fails until a NEW sample arrives
+}
+
+/** Stale twist reads as zero — a sensor dropout can never replay an old flick. */
+function freshTwist(v) {
+  return (performance.now() - lastTwistAt <= TWIST_FRESH_MS) ? v : 0;
+}
+
 function onMotion(e) {
+  const rot = e.rotationRate;
+  // a motion event WITHOUT usable rotation data invalidates the twist series
+  // immediately — a missing sample reads as zero spin, never a replayed flick.
+  // (The 400ms watchdog only covers the case where events stop arriving.)
+  const twistValid = Number.isFinite(rot?.alpha);
+  if (!twistValid) resetTwist();
   const acc = e.accelerationIncludingGravity;
   if (!acc || acc.x == null) return;
   const mag = Math.hypot(acc.x, acc.y, acc.z);
@@ -293,9 +325,21 @@ function onMotion(e) {
   // never accumulate while waiting and release the moment a turn starts
   if (!canThrow) {
     if (swinging) resetSwing();
+    resetTwist(); // off-turn: never show or throw a stale twist
     return;
   }
   const now = performance.now();
+
+  // ONE bounded twist series feeds BOTH the preview and the release capture.
+  // rotationRate.alpha is rotation about the phone's OWN screen normal, so it
+  // reads the wrist twist however the phone is carried: pure pitch has no
+  // alpha component, so carrying the phone cannot show up as hook (the
+  // separation is this model's design; real-handset feel is untested).
+  if (twistValid) {
+    liveTwist = liveTwist * 0.65 + rot.alpha * 0.35;
+    lastTwistAt = now;
+  }
+
   const dt = lastMotionTs ? Math.min(0.1, (now - lastMotionTs) / 1000) : 0;
   lastMotionTs = now;
 
@@ -304,33 +348,48 @@ function onMotion(e) {
     const active = dev > SWING_OFF; // still accelerating — the swing itself
     if (active) {
       swingActiveMs += dt * 1000; // ms of sustained acceleration
+      // snapshot the SHARED smoothed series; the final active sample (the
+      // release flick) is the one that survives — carry rotation is overwritten
+      releaseTwist = liveTwist;
     } else {
       // motion stopped. A real swing SUSTAINS acceleration for a while; a
       // pick-up jolt is a brief spike — those are discarded, not thrown.
       if (swingActiveMs >= MIN_ACTIVE_MS && swingPeak >= SWING_MIN_PEAK) {
         const power = clamp((swingPeak - SWING_ON) / (MAX_PEAK - SWING_ON), 0.15, 1);
         latestPower = power; // remembered for button mode
-        if (!buttonMode) sendThrow(power, 0); // straight ball — exactly the aimed line
+        if (!buttonMode) sendThrow(power, spinFromTwist(freshTwist(releaseTwist)));
       }
       swinging = false;
-      swingPeak = 0; swingActiveMs = 0;
+      swingPeak = 0; swingActiveMs = 0; releaseTwist = 0;
       swingHint.classList.remove('armed');
     }
   } else if (dev > SWING_ON && now - lastThrowAt > COOLDOWN_MS) {
     // swing starting: if we were still live-aiming, lock the posed aim now
     if (aimLiveSince) { lockedAngles = lastLiveAngles; aimLocked = true; }
     swinging = true;
-    swingStart = now; swingPeak = dev; swingActiveMs = 0;
+    swingStart = now; swingPeak = dev; swingActiveMs = 0; releaseTwist = 0;
     swingHint.classList.add('armed');
   }
 }
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+/** Wrist twist (deg/s, grip-relative) -> spin: deadzone then a gentle ramp
+ *  to full hook. Sign follows the steering wheel: twisting the phone LEFT
+ *  (counterclockwise, positive rotation about the calibrated screen normal)
+ *  hooks the ball LEFT (spin < 0 curves left in the physics). */
+function spinFromTwist(degPerSec) {
+  const a = Math.abs(degPerSec);
+  if (a < TWIST_DEADZONE) return 0;
+  const s = (a - TWIST_DEADZONE) / (TWIST_FULL - TWIST_DEADZONE);
+  return -Math.sign(degPerSec) * clamp(s, 0, 1);
+}
 
 /** Abort any in-progress swing (permission lost / turn handed over). */
 function resetSwing() {
   swinging = false;
   swingPeak = 0;
   swingActiveMs = 0;
+  resetTwist(); // turn handed over — no stale preview or button-throw spin
   swingHint.classList.remove('armed');
 }
 
@@ -342,7 +401,8 @@ function sendThrow(power, spin) {
   lastThrowAt = performance.now();
   // exactly what the screen shows: the locked pose once the dwell latched,
   // otherwise the live pose — never a mid-swing orientation. Picking the
-  // phone up from your side never wrecks the aim.
+  // phone up from your side never wrecks the aim. spin = wrist twist at
+  // the release flick (see spinFromTwist).
   const m = throwAngles();
   client.sendCtl({
     t: 'throw', id: Math.random().toString(36).slice(2), power, spin,
@@ -448,23 +508,27 @@ modeBtn.addEventListener('click', () => {
   modeBtn.textContent = buttonMode ? 'MODE: BUTTON' : 'MODE: SWING';
   throwBtn.classList.toggle('hidden', !buttonMode);
   unlockAim();
+  resetTwist(); // mode change — the old twist series is void
   updateThrowUI();
 });
 
 calBtn.addEventListener('click', () => {
   calibrate();
   unlockAim(); // the neutral changed — re-aim from scratch
+  resetTwist();
 });
 
 reaimBtn.addEventListener('click', () => {
   unlockAim(); // explicit re-aim: back to live aiming
+  resetTwist();
   if (navigator.vibrate) navigator.vibrate(10);
 });
 
 throwBtn.addEventListener('click', () => {
   const power = swinging ? clamp((swingPeak - SWING_ON) / (MAX_PEAK - SWING_ON), 0.15, 1)
                          : (latestPower > 0 ? latestPower : 0.62);
-  sendThrow(power, 0); // straight ball — exactly the aimed line
+  // button throw: the CURRENT wrist twist is the spin (twist while tapping)
+  sendThrow(power, spinFromTwist(freshTwist(liveTwist)));
 });
 
 function updateThrowUI() {
@@ -488,7 +552,8 @@ function tick() {
   tiltBg.style.opacity = String(Math.min(1, Math.abs(m.steer / MAX_STEER) + Math.abs(m.aim / MAX_AIM) / 2));
   if (client && client.connected && now - lastSent >= 33) {
     lastSent = now;
-    client.sendState(++seq, clamp(m.steer, -MAX_STEER, MAX_STEER), clamp(m.aim, -MAX_AIM, MAX_AIM));
+    // live wrist twist rides along so the game's aim guide can preview the hook
+    client.sendState(++seq, clamp(m.steer, -MAX_STEER, MAX_STEER), clamp(m.aim, -MAX_AIM, MAX_AIM), spinFromTwist(freshTwist(liveTwist)));
   }
   calTick();
   requestAnimationFrame(tick);
