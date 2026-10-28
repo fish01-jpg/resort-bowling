@@ -130,6 +130,38 @@ export class PhoneHost {
   }
 
   /**
+   * Info for a slot's pairing session: { slot, code, url, connected } or null.
+   * The url/code are the ones the phone originally paired with — they keep
+   * working after a disconnect (the session persists; the phone reconnecting
+   * with them triggers the gen+1 renegotiation).
+   */
+  slotInfo(slot) {
+    const s = this._session(slot);
+    return s ? { slot, code: s.code, url: s.url, connected: s.connected } : null;
+  }
+
+  /**
+   * Re-publish a FRESH offer for an EXISTING slot's session — same code and
+   * QR. Call this when a connected phone drops: the doc is guaranteed to
+   * carry a live offer again, so the phone can rescan the SAME QR (or hit
+   * its RECONNECT button) and land back in the same slot. No game state is
+   * touched. Returns { code, url } on success, { connected: true } if the
+   * phone is somehow already back (nothing refreshed), or null on failure
+   * (refresh failed / session replaced or closed mid-refresh).
+   */
+  async refreshSlot(slot) {
+    const s = this._session(slot);
+    if (!s) return null;
+    // a LIVE connection must never be torn down just to "refresh" it
+    if (s.connected) return { slot, code: s.code, url: s.url, connected: true };
+    const ok = await this._refreshOffer(s);
+    if (!ok) return null; // refresh failed or the session closed mid-refresh
+    const cur = this._session(slot);
+    if (!cur || cur !== s) return null; // the session was replaced while refreshing
+    return { slot, code: s.code, url: s.url };
+  }
+
+  /**
    * Start pairing for one slot (0-based). Any previous session for that slot
    * is torn down first (fresh token/code — safe re-pair). Returns
    * { code, url, slot } once the offer is published.
@@ -143,6 +175,9 @@ export class PhoneHost {
       slot,
       docId,
       code,
+      url, // the QR/pairing URL for this session — STAYS VALID across
+           // disconnects, so a dropped phone can rescan the same QR and
+           // reconnect to the same slot/game without resetting anything
       unsub: null,
       pc: null,
       stateCh: null,
@@ -270,38 +305,45 @@ export class PhoneHost {
    * could pass the claim check but its new answer was ignored by the host's
    * already-negotiated peer — "worked before, now stuck on connecting".
    */
-  async _refreshOffer(s) {
-    if (s.closed || s.refreshing) return;
+  _refreshOffer(s) {
+    if (s.closed) return Promise.resolve(false);
+    if (s.refreshing) return s.refreshPromise || Promise.resolve(false); // await the in-flight one
     if (s.refreshTimer) { clearTimeout(s.refreshTimer); s.refreshTimer = null; }
     s.refreshing = true;
-    s.lastRefreshAt = Date.now();
-    try {
-      this._stopPing(s);
-      if (s.pc) { try { s.pc.close(); } catch { /* already closed */ } s.pc = null; }
-      const wasConnected = s.connected;
-      s.connected = false;
-      s.gen += 1;
-      s.appliedAnswer = null;
-      s.lastSeq = -1; // the phone reloaded: its sample counter restarts at 0
-      this._createPeer(s);
-      const offer = await s.pc.createOffer();
-      if (s.closed) return;
-      await s.pc.setLocalDescription(offer);
-      if (s.closed) return;
-      await waitIce(s.pc);
-      if (s.closed) return;
-      await updateDoc(doc(db(), COLLECTION, s.docId), {
-        offer: JSON.stringify(s.pc.localDescription),
-        gen: s.gen,
-        answer: null,
-        updatedAt: serverTimestamp(),
-      });
-      if (wasConnected) this.onStatus(s.slot, 'waiting'); // renegotiating
-    } catch (e) {
-      if (!s.closed) this.onStatus(s.slot, 'error', 'refresh failed: ' + (e.message || e));
-    } finally {
-      s.refreshing = false;
-    }
+    const p = (async () => {
+      let ok = false;
+      try {
+        this._stopPing(s);
+        if (s.pc) { try { s.pc.close(); } catch { /* already closed */ } s.pc = null; }
+        const wasConnected = s.connected;
+        s.connected = false;
+        s.gen += 1;
+        s.appliedAnswer = null;
+        s.lastSeq = -1; // the phone reloaded: its sample counter restarts at 0
+        this._createPeer(s);
+        const offer = await s.pc.createOffer();
+        if (s.closed) return false;
+        await s.pc.setLocalDescription(offer);
+        if (s.closed) return false;
+        await waitIce(s.pc);
+        if (s.closed) return false;
+        await updateDoc(doc(db(), COLLECTION, s.docId), {
+          offer: JSON.stringify(s.pc.localDescription),
+          gen: s.gen,
+          answer: null,
+          updatedAt: serverTimestamp(),
+        });
+        ok = true;
+        if (wasConnected) this.onStatus(s.slot, 'waiting'); // renegotiating
+      } catch (e) {
+        if (!s.closed) this.onStatus(s.slot, 'error', 'refresh failed: ' + (e.message || e));
+      } finally {
+        s.refreshing = false;
+      }
+      return ok;
+    })();
+    s.refreshPromise = p;
+    return p;
   }
 
   _wireChannels(s) {

@@ -619,3 +619,59 @@ Round 14 review fixes (static review, still no runtime testing):
   flies its arc untouched and the forces resume after landing.
 - css/style.css refs bumped to ?v=4 in BOTH html files (it changed — the
   old ?v=2 would have served the new JS without touch-action:none).
+
+Round 15: phone-disconnect reconnect flow (user-requested, untested by agent)
+
+User request: when a phone disconnects, show a popup asking to reconnect the
+phone without resetting the game; add a button on the game screen to
+reconnect it; let the player just rescan the QR and reconnect; and add a
+manual reconnect button on the phone.
+
+- rtc.js: sessions now store their pairing url; new slotInfo(slot) returns
+  { code, url, connected }; new refreshSlot(slot) re-publishes a FRESH offer
+  on the SAME doc (same code/QR) so a dropped phone can rescan the same QR
+  and reconnect to the same slot — the gen+1 renegotiation handles the rest
+  (Round 9's mechanism; no new races introduced).
+- Host (main.js): a mid-game disconnect now shows a NON-BLOCKING popup
+  (#phone-reconnect, z-40) with the SAME code + QR. Buttons: RECONNECT
+  (re-publishes a fresh offer — same code), NEW CODE (full re-pair of the
+  slot via pairPhoneSlot, which now returns its result), and Close. The
+  popup auto-hides when the phone reconnects, and is skipped while the
+  pairing menu itself is open (the chips/status line already handle it).
+  renderPhoneQr refactored into renderQrTo(canvas, text) for reuse.
+- Phone (phone-main.js v5): on disconnect a full-screen overlay
+  (#reconnect-overlay) offers RECONNECT PHONE — it re-runs connect() with
+  the SAME stored code/token, landing back in the same slot/game. Rescan
+  QR does the same (QR auto-pair path). Failure hint points at the host
+  popup's QR. Overlay hides on channel open / 'connected'.
+- Version bumps v5: index.html (style.css, main.js), main.js imports
+  (ui.js?v=5, rtc.js?v=5), phone.html (style.css, phone-main.js?v=5,
+  badge v5), phone-main.js (rtc.js?v=5). physics/game stay at ?v=4
+  (unchanged this round).
+- NOT run/tested by the agent (user rule): node --check syntax pass only.
+
+Round 15 review fixes (static review, still no runtime testing):
+
+- Phone reconnect no longer restarts sensor init: startSensors() is guarded
+  (sensorsStarted) so listeners/tick() register exactly once; connect()'s
+  onOpen returns straight to the controls on reconnect (a modal screen
+  stays up if one is open).
+- Stale PhoneClient instances can't touch the UI: an activeClient guard
+  ignores onOpen/onStatus/onCtl from superseded instances (an old dead
+  client can no longer re-open the lost-connection overlay after a newer
+  connect succeeds).
+- Reconnect failures now show INSIDE the phone overlay (#reconnect-msg),
+  not just the header behind it.
+- The host popup only dismisses for its OWN slot; another phone
+  reconnecting no longer kills a different slot's recovery prompt.
+- _refreshOffer returns a truthful boolean (stores its in-flight promise;
+  callers can await it); refreshSlot never tears down a live connection
+  (returns connected:true instead), verifies the session is still current
+  after awaiting, and returns null on failure instead of a fake success.
+- refreshReconnectOffer/newReconnectCode capture hub+slot identity and
+  discard stale completions (popup closed/switched, hub replaced).
+- pairPhoneSlot's early exits now return CANCELLED-marked results so the
+  popup can never advertise a dead code.
+- Persistent recovery entry point: a "RECONNECT PHONE" button in the game
+  HUD (visible whenever a phone has a disconnected session) reopens the
+  popup — the flow survives closing the popup.

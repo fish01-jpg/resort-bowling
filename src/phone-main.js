@@ -9,7 +9,7 @@ import {
   deleteDoc, serverTimestamp, updateDoc,
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import { PhoneClient } from './rtc.js?v=2';
+import { PhoneClient } from './rtc.js?v=5';
 import {
   quatFromEuler, quatConj, quatMul, relativeRotation, extractAngles,
   applyControlScheme,
@@ -38,6 +38,7 @@ const slotBadge = $('slot-badge');
 const tilt = $('tilt-indicator'), tiltBg = $('tilt-fill'), tiltStage = $('tilt-stage');
 const tiltLabel = $('tilt-label');
 const throwBtn = $('throw-btn'), calBtn = $('cal-btn');
+const reconnectOverlay = $('reconnect-overlay'), reconnectBtn = $('reconnect-btn');
 const reaimBtn = $('reaim-btn');
 const swingHint = $('swing-hint');
 const gameButtons = $('game-buttons');
@@ -68,6 +69,45 @@ function setStatus(kind, text) {
   statusText.textContent = text;
 }
 
+// ------------------------------ reconnect --------------------------------
+// If the connection drops mid-game, a full-screen overlay offers RECONNECT:
+// it re-runs the pairing with the SAME code/token (lastPairRef) — the host's
+// pairing session persists, so the phone lands back in the same slot with
+// the same game. Rescanning the QR from the host's popup does the same.
+
+function showReconnect() {
+  reconnectOverlay.classList.remove('hidden');
+  reconnectBtn.disabled = false;
+  reconnectBtn.textContent = 'RECONNECT PHONE';
+}
+
+function hideReconnect() {
+  reconnectOverlay.classList.add('hidden');
+}
+
+function setReconnectMsg(text) {
+  // failures must show INSIDE the overlay — the header status is behind it
+  const el = $('reconnect-msg');
+  if (el) el.textContent = text;
+}
+
+reconnectBtn.addEventListener('click', async () => {
+  if (!lastPairRef) return; // never paired — nothing to reconnect to
+  reconnectBtn.disabled = true;
+  reconnectBtn.textContent = 'RECONNECTING…';
+  setReconnectMsg('Reconnecting — the game is waiting for you.');
+  try {
+    await connect(lastPairRef); // same code/token — same slot, same game
+  } catch (e) {
+    // the old code may be gone (host issued a NEW CODE) — tell the player
+    // to rescan the QR on the game screen
+    reconnectBtn.disabled = false;
+    reconnectBtn.textContent = 'RECONNECT PHONE';
+    setReconnectMsg('Reconnect failed — rescan the QR code on the game screen.');
+    setStatus('err', 'Reconnect failed');
+  }
+});
+
 // ------------------------------ pairing ----------------------------------
 pairBtn.addEventListener('click', async () => {
   pairErr.textContent = '';
@@ -85,31 +125,43 @@ pairBtn.addEventListener('click', async () => {
 });
 codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pairBtn.click(); });
 
+let activeClient = null;   // the LATEST PhoneClient — superseded instances' callbacks are ignored
+let sensorsStarted = false; // sensor listeners + the tick loop start exactly ONCE
+
 async function connect(codeOrToken) {
   if (client) { try { client.close(); } catch { /* already dead */ } } // retry: don't leak the old connection
   opened = false;
   lastPairRef = codeOrToken;
-  client = new PhoneClient({
+  const c = new PhoneClient({
     onOpen() {
-      // first open: move to the motion/permission flow. On RECONNECT (host
-      // refreshed its offer) stay on whatever screen is up.
-      if (!opened) {
-        opened = true;
-        pairBtn.disabled = false;
-        pairBtn.textContent = 'CONNECT';
+      if (c !== activeClient) return; // superseded by a newer connect()
+      // first ever open: the motion/permission flow. On RECONNECT the
+      // sensors are already running — go straight back to the controls
+      // (no second permission flow, no second animation loop), and stay
+      // on a modal screen if one is up (SETUP / motion permission).
+      const first = !opened;
+      opened = true;
+      pairBtn.disabled = false;
+      pairBtn.textContent = 'CONNECT';
+      if (first && !sensorsStarted) {
         show(motionScreen);
         requestMotion();
+      } else if (!controlsSuspended) {
+        show(ctlScreen);
       }
+      hideReconnect(); // the channel is open again — the overlay is moot
     },
     onStatus(kind, detail) {
+      if (c !== activeClient) return; // stale instance — a newer connect() owns the UI
       if (opened) {
-        if (kind === 'connected') setStatus('ok', 'Connected');
+        if (kind === 'connected') { setStatus('ok', 'Connected'); hideReconnect(); }
         else if (kind === 'disconnected') {
-          setStatus('warn', 'Connection lost — swipe down to reload');
+          setStatus('warn', 'Connection lost');
           canThrow = false; // permission is meaningless while disconnected
           cancelHold(); // a hold can't survive the connection dropping
           resetTwist();
           updateThrowUI();
+          showReconnect(); // offer to reconnect — the game on the host keeps running
         }
         else if (kind === 'error') setStatus('err', 'Error: ' + (detail || ''));
         else if (kind === 'connecting') setStatus('warn', 'Connecting…');
@@ -130,6 +182,7 @@ async function connect(codeOrToken) {
       }
     },
     onCtl(m) {
+      if (c !== activeClient) return; // stale instance
       if (m.t === 'phase') {
         const wasMyTurn = canThrow;
         canThrow = !!m.canThrow;
@@ -147,6 +200,8 @@ async function connect(codeOrToken) {
       }
     },
   });
+  client = c;
+  activeClient = c; // from now on only THIS instance's callbacks touch the UI
   if (String(codeOrToken).startsWith('?')) codeOrToken = new URLSearchParams(String(codeOrToken)).get('pair');
   if (/^[0-9a-f]{24,}$/i.test(String(codeOrToken))) await client.connectByToken(codeOrToken);
   else await client.connectByCode(codeOrToken);
@@ -803,6 +858,13 @@ function tick() {
 }
 
 function startSensors() {
+  if (sensorsStarted) {
+    // reconnect: listeners and the tick loop are already running — just
+    // return to the controls. Never register twice / loop twice.
+    show(ctlScreen);
+    return;
+  }
+  sensorsStarted = true;
   window.addEventListener('deviceorientation', onOrient);
   window.addEventListener('devicemotion', onMotion);
   show(ctlScreen);

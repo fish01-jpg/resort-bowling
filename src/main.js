@@ -3,12 +3,12 @@ import RAPIER from 'https://esm.sh/@dimforge/rapier3d-compat@0.12.0';
 import { createScene } from './scene.js';
 import { Physics } from './physics.js?v=4';
 import { Input } from './input.js';
-import { UI } from './ui.js';
+import { UI } from './ui.js?v=5';
 import { AudioFX } from './audio.js';
 import { BowlingGame } from './game.js?v=4';
 import { Match, playerProgress, buildGames } from './match.js';
 import { RoomClient, TURN_TIMEOUT_MS } from './net.js';
-import { PhoneHost } from './rtc.js?v=2';
+import { PhoneHost } from './rtc.js?v=5';
 import { LANE, TUNING } from './constants.js';
 
 // Phones become controllers, not the game screen: redirect small touch
@@ -557,17 +557,93 @@ async function boot() {
     broadcastPhonePhase();
   }
 
-  async function renderPhoneQr(text) {
+  async function renderQrTo(canvas, text) {
     try {
       const mod = await import('https://esm.sh/qrcode@1.5.4');
       const QR = mod.default || mod;
-      await QR.toCanvas(ui.el.phoneQr, text, {
+      await QR.toCanvas(canvas, text, {
         width: 200, margin: 1,
         color: { dark: '#0b2a3d', light: '#ffffff' },
       });
-      ui.el.phoneQr.classList.remove('hidden');
+      canvas.classList.remove('hidden');
     } catch {
-      ui.el.phoneQr.classList.add('hidden'); // code entry still works
+      canvas.classList.add('hidden'); // code entry still works
+    }
+  }
+
+  async function renderPhoneQr(text) {
+    await renderQrTo(ui.el.phoneQr, text);
+  }
+
+  // ------------- phone reconnect popup (mid-game disconnect) --------------
+  // A connected phone dropped: a popup offers to reconnect it WITHOUT
+  // resetting the game. The pairing session persists, so the SAME code/QR
+  // still works — the phone can rescan the QR shown in the popup, or hit
+  // the RECONNECT button on the phone itself, and it lands back in the
+  // same slot with the same game. The game keeps running behind the popup.
+
+  let reconnectSlotShown = -1;
+  let reconnectButtonsWired = false;
+
+  function hidePhoneReconnectPopup() {
+    ui.el.phoneReconnect.classList.add('hidden');
+    reconnectSlotShown = -1;
+  }
+
+  function showPhoneReconnectPopup(slot) {
+    // the pairing menu's chips/status line already handle disconnects
+    const inPhoneMenu = ui.el.overlay.classList.contains('show')
+      && !ui.el.menuPhone.classList.contains('hidden');
+    if (inPhoneMenu) return;
+    const info = phoneHub ? phoneHub.slotInfo(slot) : null;
+    if (!info) return; // no session for that slot — the chips handle re-pair
+    reconnectSlotShown = slot;
+    ui.el.reconnectTitle.textContent = `PHONE ${slot + 1} DISCONNECTED`;
+    ui.el.reconnectCode.textContent = info.code;
+    ui.el.reconnectStatus.textContent = 'The game is still running — nothing was reset.';
+    ui.el.phoneReconnect.classList.remove('hidden');
+    renderQrTo(ui.el.reconnectQr, info.url);
+  }
+
+  async function refreshReconnectOffer() {
+    if (reconnectSlotShown < 0 || !phoneHub) return;
+    const hub = phoneHub, slot = reconnectSlotShown; // identity for stale checks
+    ui.el.reconnectStatus.textContent = 'Publishing a fresh connection…';
+    try {
+      const res = await hub.refreshSlot(slot);
+      // stale completion? the popup closed, moved to another slot, or the hub
+      // was replaced while we awaited — the result is moot
+      if (reconnectSlotShown !== slot || phoneHub !== hub) return;
+      if (!res) {
+        ui.el.reconnectStatus.textContent = 'Refresh failed — try NEW CODE.';
+        return;
+      }
+      if (res.connected) { // it's already back — nothing was refreshed
+        hidePhoneReconnectPopup();
+        return;
+      }
+      ui.el.reconnectCode.textContent = res.code;
+      await renderQrTo(ui.el.reconnectQr, res.url);
+      if (reconnectSlotShown !== slot || phoneHub !== hub) return; // stale again
+      ui.el.reconnectStatus.textContent = 'Fresh connection ready — rescan the QR, or tap RECONNECT on the phone.';
+    } catch (e) {
+      if (reconnectSlotShown === slot) ui.el.reconnectStatus.textContent = 'Refresh failed — try NEW CODE.';
+    }
+  }
+
+  async function newReconnectCode() {
+    if (reconnectSlotShown < 0) return;
+    const hub = phoneHub, slot = reconnectSlotShown; // identity for stale checks
+    ui.el.reconnectStatus.textContent = 'Issuing a new code…';
+    const res = await pairPhoneSlot(slot);
+    if (reconnectSlotShown !== slot || phoneHub !== hub) return; // stale completion
+    if (res && !res.cancelled) {
+      ui.el.reconnectCode.textContent = res.code;
+      await renderQrTo(ui.el.reconnectQr, res.url);
+      if (reconnectSlotShown !== slot) return; // stale again
+      ui.el.reconnectStatus.textContent = 'New code — scan this QR on the phone (its old saved code is void).';
+    } else {
+      ui.el.reconnectStatus.textContent = 'Could not issue a new code — try again.';
     }
   }
 
@@ -583,6 +659,17 @@ async function boot() {
     ui.el.phoneConnectedNote.classList.toggle('hidden', !connected);
     ui.el.phonePairRow.classList.toggle('hidden', !phoneHub);
     renderPhoneSlots();
+    updatePhoneReconnectHudBtn();
+  }
+
+  /** The persistent HUD "RECONNECT PHONE" button: visible whenever some
+   *  phone has a DISCONNECTED session — a mid-game recovery entry point
+   *  that survives closing the popup. Never disturbs a live connection. */
+  function updatePhoneReconnectHudBtn() {
+    const dropped = phoneHub
+      ? phoneHub.sessions.some((s) => !s.connected && !s.closed)
+      : false;
+    ui.el.btnPhoneReconnectHud.classList.toggle('hidden', !dropped);
   }
 
   /** Per-slot status chips in the pairing menu (tap a chip to re-pair it). */
@@ -631,20 +718,25 @@ async function boot() {
     try {
       const base = new URL('phone.html', location.href).href;
       const res = await hub.startPairing(base, slot);
-      if (phoneHub !== hub || res.cancelled || slot >= phoneCount) return;
+      // hub replaced / session vanished mid-pairing: mark CANCELLED so no
+      // caller (the reconnect popup) advertises a dead code
+      if (phoneHub !== hub) return { ...res, cancelled: true };
+      if (res.cancelled || slot >= phoneCount) return res;
       pairedSlotShown = slot;
       ui.el.phoneCode.textContent = res.code;
       await renderPhoneQr(res.url);
       // the slot may have been closed while the QR rendered
-      if (phoneHub !== hub || !hub.sessions.some((s) => s.slot === slot)) return;
+      if (phoneHub !== hub || !hub.sessions.some((s) => s.slot === slot)) return { ...res, cancelled: true };
       const done = hub.connectedSlots().length;
       ui.el.phoneStatus.textContent = phoneCount > 1
         ? `Scan the QR with phone ${slot + 1} — ${done}/${phoneCount} connected`
         : 'Scan the QR (or open this site on your phone and enter the code)';
+      return res;
     } catch (e) {
       if (phoneHub === hub) {
         ui.el.phoneStatus.textContent = 'Could not start pairing: ' + (e.message || e);
       }
+      return null;
     } finally {
       phonePairingBusy = false;
       updatePhoneNotes();
@@ -696,6 +788,9 @@ async function boot() {
           broadcastPhonePhase();
           lastUiKeys = ''; // mirror the current on-screen buttons to it
           syncPhoneUi();
+          // dismiss the reconnect popup only if it's for THIS slot — another
+          // phone dropping must not lose its own recovery prompt
+          if (reconnectSlotShown === slot) hidePhoneReconnectPopup();
           // auto-advance: pair the next slot with no session at all
           if (n < phoneCount) {
             const next = nextEmptyPhoneSlot();
@@ -703,6 +798,7 @@ async function boot() {
           }
         } else if (kind === 'disconnected') {
           ui.el.phoneStatus.textContent = `Phone ${slot + 1} disconnected — tap its chip to re-pair`;
+          showPhoneReconnectPopup(slot); // mid-game: offer to reconnect, reset nothing
         } else if (kind === 'error') {
           ui.el.phoneStatus.textContent = `Phone ${slot + 1} error: ` + (detail || 'pairing failed');
         }
@@ -711,6 +807,20 @@ async function boot() {
       onLatency: (slot, ms) => { /* status line above; keep for future HUD */ void slot; void ms; },
     });
     phoneHub = hub;
+    // wire the reconnect-popup buttons once — they survive hub replacement
+    if (!reconnectButtonsWired) {
+      reconnectButtonsWired = true;
+      ui.el.btnReconnectRefresh.addEventListener('click', refreshReconnectOffer);
+      ui.el.btnReconnectNew.addEventListener('click', newReconnectCode);
+      ui.el.btnReconnectClose.addEventListener('click', hidePhoneReconnectPopup);
+      // persistent HUD entry point: reopen the popup for the first
+      // disconnected phone (never touches a live connection)
+      ui.el.btnPhoneReconnectHud.addEventListener('click', () => {
+        if (!phoneHub) return;
+        const dropped = phoneHub.sessions.find((x) => !x.connected && !x.closed);
+        if (dropped) showPhoneReconnectPopup(dropped.slot);
+      });
+    }
   }
 
   // ---------------- phone UI mirroring ----------------

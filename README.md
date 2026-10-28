@@ -81,6 +81,10 @@ multiple STUN servers are tried and the whole connect attempt is bounded
 and fails with a retry prompt instead of hanging, and the phone keeps a
 stable per-device id while the host renegotiates automatically — reloading
 or reconnecting with the same QR/code reconnects instead of getting stuck.
+If a phone drops MID-GAME, the game screen shows a reconnect popup with the
+SAME QR — rescan it (or tap RECONNECT PHONE on the phone) and the phone
+returns to the same slot with the same game; nothing resets. The popup's
+NEW CODE button issues a fresh code when the old one is unreachable.
 On strict networks (school Wi-Fi, hotspots that block peer-to-peer UDP),
 add your own TURN relay credentials in `src/rtc.js` (`RTC_OPTS`) — the code
 there shows exactly where.

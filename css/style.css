@@ -197,6 +197,17 @@ canvas { display: block; }
 #mute-btn:hover, #restart-btn:hover { transform: translateY(-1px); }
 #mute-btn.muted { color: var(--color-ink-muted); }
 #mute-btn.muted svg { opacity: 0.45; }
+#btn-phone-reconnect { /* persistent mid-game recovery entry point */
+  background: linear-gradient(180deg, #4cc9f0, #4aa8d8);
+  border: none;
+  color: #06222e;
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+#btn-phone-reconnect.hidden { display: none; }
 
 /* ---------- center message ---------- */
 #message {
@@ -708,6 +719,33 @@ kbd {
 
 .tilt-stage.hidden { display: none; }
 .tilt-stage.pad-mode { touch-action: none; } /* drag surface: no scroll/zoom */
+
+/* Reconnect overlay: fixed, covers whatever screen is up when the
+   connection drops. The game on the host keeps running — reconnecting
+   with the same code/QR lands back in the same slot. */
+.reconnect-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+  padding: 24px;
+  background: rgba(6, 22, 33, 0.88);
+}
+.reconnect-overlay.hidden { display: none; }
+.reconnect-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #ffd9a0;
+  margin: 0;
+}
+.reconnect-sub { font-size: 14px; color: #9dc0d2; margin: 0; }
+.reconnect-sub.small { font-size: 12px; }
 .tilt-stage {
   position: relative;
   width: min(88vw, 340px);
@@ -764,6 +802,56 @@ kbd {
   padding: 6px;
 }
 #phone-qr.hidden { display: none; }
+
+/* ============================================================
+   Phone reconnect popup (mid-game disconnect) — game keeps running
+   ============================================================ */
+#phone-reconnect {
+  position: fixed;
+  inset: 0;
+  z-index: 40; /* above the HUD; above #overlay(30) so it also covers menus */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at 50% 30%, rgba(23, 63, 58, 0.25), rgba(10, 26, 24, 0.82));
+}
+#phone-reconnect.hidden { display: none; }
+#phone-reconnect-card {
+  text-align: center;
+  color: var(--color-surface-solid);
+  background: linear-gradient(180deg, #10465c, #0a2e40);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  padding: 22px 26px;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+#reconnect-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.14em;
+  margin: 0;
+}
+#reconnect-qr {
+  border-radius: 10px;
+  background: #fff;
+  padding: 6px;
+  width: 180px;
+  height: 180px;
+}
+#reconnect-qr.hidden { display: none; }
+#reconnect-code {
+  font-size: 28px;
+  letter-spacing: 8px;
+  font-weight: 700;
+  color: #f7b267;
+}
+#phone-reconnect-card .menu-note { color: #9dc0d2; }
 .small-note { font-size: 12px !important; color: #7fa5bb !important; }
 .menu-btn.phone-accent {
   background: linear-gradient(180deg, #4cc9f0, #4aa8d8);

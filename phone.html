@@ -4,13 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
 <title>Sunset Lanes — Phone Controller</title>
-<link rel="stylesheet" href="css/style.css?v=4" />
+<link rel="stylesheet" href="css/style.css?v=5" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='44' fill='%23002e4d'/><circle cx='50' cy='50' r='26' fill='none' stroke='%23f7b267' stroke-width='10'/></svg>" />
 <meta name="theme-color" content="#002e4d" />
 </head>
 <body class="phone-body">
 <div class="phone-wrap">
-  <span id="app-version" style="position:fixed;right:8px;bottom:6px;font-size:11px;opacity:.45;z-index:50">v4</span>
+  <span id="app-version" style="position:fixed;right:8px;bottom:6px;font-size:11px;opacity:.45;z-index:50">v5</span>
 
   <!-- 1. pairing -->
   <section id="pair-screen" class="phone-screen active">
@@ -88,7 +88,15 @@
     <button id="settings-back" class="phone-btn small">BACK</button>
   </section>
 
+  <!-- reconnection: fixed overlay, shown whenever the connection drops -->
+  <div id="reconnect-overlay" class="reconnect-overlay hidden">
+    <p class="reconnect-title">CONNECTION LOST</p>
+    <p class="reconnect-sub">The game is still running — nothing was reset.</p>
+    <button id="reconnect-btn" class="phone-btn">RECONNECT PHONE</button>
+    <p class="reconnect-sub small" id="reconnect-msg">…or rescan the QR code shown on the game screen.</p>
+  </div>
+
 </div>
-<script type="module" src="src/phone-main.js?v=4"></script>
+<script type="module" src="src/phone-main.js?v=5"></script>
 </body>
 </html>
