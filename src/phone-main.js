@@ -41,10 +41,21 @@ const swingHint = $('swing-hint');
 const gameButtons = $('game-buttons');
 
 let client = null;
+let opened = false; // true once the data channel is open (status then goes to the header)
+let lastPairRef = null; // last code/token — CONNECT retries reuse it (QR users)
+let controlsSuspended = false; // SETUP / motion-permission screen is up: sensor input paused
+
+const settingsScreen = $('settings-screen');
+const ALL_SCREENS = [pairScreen, motionScreen, ctlScreen, settingsScreen];
 
 function show(screen) {
-  for (const s of [pairScreen, motionScreen, ctlScreen]) s.classList.remove('active');
+  // hide EVERY screen — the old list missed the settings screen, so after
+  // leaving SETUP its elements stayed stacked on top of the controls (the
+  // "parts of setup don't hide" + "controls feel locked" glitch)
+  for (const s of ALL_SCREENS) s.classList.remove('active');
   screen.classList.add('active');
+  // sensor-driven swings/throws pause while a modal screen is up
+  controlsSuspended = (screen === settingsScreen || screen === motionScreen);
 }
 
 function setStatus(kind, text) {
@@ -55,31 +66,62 @@ function setStatus(kind, text) {
 // ------------------------------ pairing ----------------------------------
 pairBtn.addEventListener('click', async () => {
   pairErr.textContent = '';
-  const code = codeInput.value.trim();
-  if (code.length < 4) { pairErr.textContent = 'Enter the 4-letter code from the game.'; return; }
+  const code = codeInput.value.trim() || lastPairRef; // QR users have no code typed
+  if (!code) { pairErr.textContent = 'Enter the 4-letter code from the game.'; return; }
   pairBtn.disabled = true;
+  pairBtn.textContent = 'CONNECTING…';
   try {
     await connect(code);
   } catch (e) {
     pairErr.textContent = e.message || 'Could not connect.';
     pairBtn.disabled = false;
+    pairBtn.textContent = 'CONNECT';
   }
 });
 codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pairBtn.click(); });
 
 async function connect(codeOrToken) {
+  if (client) { try { client.close(); } catch { /* already dead */ } } // retry: don't leak the old connection
+  opened = false;
+  lastPairRef = codeOrToken;
   client = new PhoneClient({
-    onOpen() { show(motionScreen); requestMotion(); },
-    onStatus(kind, detail) {
-      if (kind === 'connected') setStatus('ok', 'Connected');
-      else if (kind === 'disconnected') {
-        setStatus('warn', 'Connection lost — swipe down to reload');
-        canThrow = false; // permission is meaningless while disconnected
-        resetTwist();
-        updateThrowUI();
+    onOpen() {
+      // first open: move to the motion/permission flow. On RECONNECT (host
+      // refreshed its offer) stay on whatever screen is up.
+      if (!opened) {
+        opened = true;
+        pairBtn.disabled = false;
+        pairBtn.textContent = 'CONNECT';
+        show(motionScreen);
+        requestMotion();
       }
-      else if (kind === 'error') setStatus('err', 'Error: ' + (detail || ''));
-      else if (kind === 'connecting') setStatus('warn', 'Connecting…');
+    },
+    onStatus(kind, detail) {
+      if (opened) {
+        if (kind === 'connected') setStatus('ok', 'Connected');
+        else if (kind === 'disconnected') {
+          setStatus('warn', 'Connection lost — swipe down to reload');
+          canThrow = false; // permission is meaningless while disconnected
+          resetTwist();
+          updateThrowUI();
+        }
+        else if (kind === 'error') setStatus('err', 'Error: ' + (detail || ''));
+        else if (kind === 'connecting') setStatus('warn', 'Connecting…');
+      } else {
+        // BEFORE the channel opens we are still on the pairing screen — the
+        // status header isn't visible there, so surface progress/errors on
+        // the pairing screen itself and re-enable CONNECT so the user can
+        // retry (this was the "stuck on the loading screen" bug)
+        if (kind === 'connecting') {
+          pairErr.textContent = 'Connecting…';
+        } else {
+          pairErr.textContent = kind === 'error'
+            ? 'Error: ' + (detail || 'connection failed')
+            : 'Connection lost — tap CONNECT to retry';
+          pairBtn.disabled = false;
+          pairBtn.textContent = 'CONNECT';
+        }
+      }
     },
     onCtl(m) {
       if (m.t === 'phase') {
@@ -107,14 +149,19 @@ async function connect(codeOrToken) {
 // QR auto-pair: ?pair=TOKEN in the URL
 const params = new URLSearchParams(location.search);
 if (params.has('pair')) {
+  pairBtn.disabled = true;
+  pairBtn.textContent = 'CONNECTING…';
   connect(params.get('pair')).catch((e) => {
     pairErr.textContent = e.message || 'Could not pair from the QR code.';
     pairBtn.disabled = false;
+    pairBtn.textContent = 'CONNECT';
   });
 }
 
 // ------------------------------ motion permission -------------------------
 async function requestMotion() {
+  // TOUCH PAD mode needs no sensors at all — skip the permission gate
+  if (settings.scheme === 'pad') { startSensors(); return; }
   const needsPermission =
     (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') ||
     (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function');
@@ -138,8 +185,17 @@ enableBtn.addEventListener('click', async () => {
     startSensors();
   } catch (e) {
     setStatus('err', 'Motion permission denied — a gyro is required.');
+    $('motion-err').textContent = 'Motion permission denied — use TOUCH MODE below.';
     show(motionScreen);
   }
+});
+
+// No gyro / permission denied? TOUCH PAD mode works without any sensors.
+$('touch-mode-btn').addEventListener('click', () => {
+  settings.scheme = 'pad';
+  saveSettings();
+  refreshSettingsUI();
+  startSensors();
 });
 
 // ------------------------------ sensor math -------------------------------
@@ -162,8 +218,12 @@ function quatAngleBetween(a, b) {
   return 2 * Math.acos(Math.min(1, Math.max(-1, d)));
 }
 
+let sawOrient = false, sawMotion = false; // any sensor data at all? (pad-mode hint)
+
 function onOrient(e) {
+  if (settings.scheme === 'pad') return; // touch pad: sensors don't drive the aim
   if (e.alpha == null) return;
+  sawOrient = true;
   qNow = quatFromEuler(e.alpha, e.beta, e.gamma);
   if (!qCal) qCal = qNow; // auto-calibrate on first sample
   if (calSamples.length) calSamples.push(qNow); // RECENTER in progress
@@ -223,18 +283,32 @@ const SWING_ON = 4.5;    // m/s^2 linear acceleration deviation to start a swing
 const SWING_OFF = 2.5;   // ...to end it
 const MIN_ACTIVE_MS = 120;   // sustained acceleration required for a real swing
 const SWING_MIN_PEAK = 6.0;  // weaker motions are pick-up jolts, not throws
+// FLICK scheme: a much gentler release — some devices' accelerometers
+// under-report, and not everyone wants to whip the phone
+const FLICK_ON = 2.6, FLICK_OFF = 1.4, FLICK_MIN_PEAK = 3.6;
+const swingCfg = () => settings.scheme === 'flick'
+  ? { on: FLICK_ON, off: FLICK_OFF, minPeak: FLICK_MIN_PEAK }
+  : { on: SWING_ON, off: SWING_OFF, minPeak: SWING_MIN_PEAK };
 const COOLDOWN_MS = 700;
 const MAX_PEAK = 20;     // m/s^2 deviation mapped to power 1.0
-const AIM_STILL_DEV = 2.5; // hand must be this still for aim updates
+const AIM_STILL_DEV = 2.5; // base stillness threshold (m/s^2 of deviation)
 const AIM_LATCH_MS = 400;   // dwell before the aim locks for the throw
+const DWELL_DRIFT = 0.02;  // rad of RAW pose drift that restarts the dwell (must be genuinely still to latch)
+const RELATCH_MOVE = 0.06;  // rad of pose change that counts as a deliberate re-aim
+const AIM_RELATCH_MS = 500; // hold the new pose this long to re-open live aiming
 const TWIST_DEADZONE = 40;  // deg/s — smaller wrist motion is noise, not spin
 const TWIST_FULL = 300;     // deg/s of release twist for full hook
 
 let lastDev = 0; // latest acceleration deviation (freshness for the stillness gate)
+let calmDev = 0;  // EMA of the accelerometer's calm noise floor (adaptive gate)
+const stillEnough = () => lastDev < Math.max(AIM_STILL_DEV, calmDev * 1.8);
 let aimLocked = false;      // LOCKED state — aim captured, frozen
 let lockedAngles = null;    // the captured pose
 let lastLiveAngles = { steer: 0, aim: 0 }; // last live pose shown on screen
 let aimLiveSince = 0; // when the current live-aiming dwell began (0 = not aiming)
+let dwellPose = null; // the RAW pose when the dwell began — used to detect drift
+let relatchSince = 0; // when a deliberate pose change away from the lock began
+let relatchPose = null; // the RAW pose when the re-aim dwell began (drift check)
 let liveTwist = 0;    // smoothed wrist-twist rate (deg/s) — aim-guide preview
 let releaseTwist = 0;  // twist rate at the release flick (the throw's spin)
 
@@ -242,32 +316,75 @@ function unlockAim() {
   aimLocked = false;
   lockedAngles = null;
   aimLiveSince = 0;
+  dwellPose = null;
+  relatchSince = 0;
+  relatchPose = null;
 }
 
 /**
  * The angles to steer/aim with — the SAME value a throw uses (throwAngles),
- * so the screen can never diverge from the ball's line. LIVE while held still
- * in stance; after a short dwell the pose is CAPTURED (LOCKED) and keeps
- * being transmitted. Carrying the phone, picking it up, or mid-swing freeze
- * it. Only an explicit action re-opens aiming: the RE-AIM button, RECENTER,
- * the mode toggle, or a fresh turn — never motion itself.
+ * so the screen can never diverge from the ball's line. LIVE while held
+ * still in stance; after a short dwell the pose is CAPTURED (LOCKED).
+ * Carrying the phone or picking it up freezes it (out of range / not still).
+ * The lock is no longer sticky: deliberately hold a NEW still in-stance pose
+ * for ~0.5s and live aiming re-opens by itself; the RE-AIM button, RECENTER
+ * and the mode toggle always work too. TOUCH PAD mode skips the latch — the
+ * thumb is the intent. The stance gate uses the RAW extracted angles (the
+ * mapped steer is zeroed in swing/flick schemes, so it can't gate anything)
+ * and an ADAPTIVE stillness threshold (a noisy accelerometer no longer locks
+ * the controls permanently).
  */
 function currentControlAngles() {
+  // TOUCH PAD: always live, never latches
+  if (settings.scheme === 'pad') {
+    const m = normalizedPose(mappedAngles());
+    lastLiveAngles = m;
+    if (tiltLabel.textContent !== 'DRAG TO AIM') tiltLabel.textContent = 'DRAG TO AIM';
+    return m;
+  }
   const label = aimLocked ? 'AIM LOCKED' : 'TILT TO AIM';
   if (tiltLabel.textContent !== label) tiltLabel.textContent = label;
-  if (swinging) { aimLiveSince = 0; return throwAngles(); } // mid-swing: frozen
-  const raw = mappedAngles();
+  if (swinging) { aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null; return throwAngles(); } // mid-swing: frozen
+  const raw = angles; // RAW extracted pose — the stance gate (pre-scheme)
   const inRange = Math.abs(raw.steer) <= MAX_STEER * 1.25 && Math.abs(raw.aim) <= MAX_AIM * 1.25;
-  const still = lastDev < AIM_STILL_DEV;
-  if (!inRange || !still) { aimLiveSince = 0; return throwAngles(); } // carried / at side
+  const still = stillEnough();
+  if (!inRange || !still) { aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null; return throwAngles(); } // carried / at side
   // accepted pose: normalized ONCE — the indicator, the transmitted state and
   // the throw all use this exact value
-  const m = normalizedPose(raw);
-  if (aimLocked && lockedAngles) return lockedAngles; // LOCKED: frozen
+  const m = normalizedPose(mappedAngles());
+  if (aimLocked && lockedAngles) {
+    // AUTO RE-AIM: deliberately hold a DIFFERENT still in-stance pose and
+    // live aiming re-opens by itself — the lock can't stick anymore.
+    // The re-aim dwell is a STABLE-POSE dwell too: continuous drift while
+    // "different from the lock" doesn't count — only a genuinely held new
+    // pose (raw pose within ~0.02 rad of where the dwell began) unlocks.
+    const moved = Math.abs(m.steer - lockedAngles.steer) + Math.abs(m.aim - lockedAngles.aim);
+    if (moved > RELATCH_MOVE) {
+      if (!relatchSince) {
+        relatchSince = performance.now();
+        relatchPose = { steer: raw.steer, aim: raw.aim };
+      } else if (relatchPose &&
+                 Math.abs(raw.steer - relatchPose.steer) + Math.abs(raw.aim - relatchPose.aim) > DWELL_DRIFT) {
+        // still moving — restart the re-aim dwell from the new pose
+        relatchSince = performance.now();
+        relatchPose = { steer: raw.steer, aim: raw.aim };
+      } else if (performance.now() - relatchSince >= AIM_RELATCH_MS) unlockAim();
+    } else { relatchSince = 0; relatchPose = null; }
+    if (aimLocked && lockedAngles) return lockedAngles; // still LOCKED: frozen
+  }
   // still, in stance, not locked: LIVE aiming
-  if (!aimLiveSince) aimLiveSince = performance.now();
+  if (!aimLiveSince) {
+    aimLiveSince = performance.now();
+    dwellPose = { steer: raw.steer, aim: raw.aim };
+  } else if (dwellPose &&
+             Math.abs(raw.steer - dwellPose.steer) + Math.abs(raw.aim - dwellPose.aim) > DWELL_DRIFT) {
+    // the pose DRIFTED during the dwell (aiming motion, not a held stance) —
+    // restart the dwell so the lock only captures a genuinely stable pose
+    aimLiveSince = performance.now();
+    dwellPose = { steer: raw.steer, aim: raw.aim };
+  }
   if (performance.now() - aimLiveSince >= AIM_LATCH_MS) {
-    lockedAngles = m; aimLocked = true; aimLiveSince = 0;
+    lockedAngles = m; aimLocked = true; aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null;
     lastLiveAngles = m; // commit + transmit + throw the same pose
     return lockedAngles;
   }
@@ -317,9 +434,20 @@ function onMotion(e) {
   if (!twistValid) resetTwist();
   const acc = e.accelerationIncludingGravity;
   if (!acc || acc.x == null) return;
+  sawMotion = true; // usable data only — null-reading events don't count
   const mag = Math.hypot(acc.x, acc.y, acc.z);
   const dev = Math.abs(mag - 9.81);
   lastDev = dev; // freshness for the aim stillness gate (always, even off-turn)
+  // track the sensor's calm noise floor (adaptive stillness threshold)
+  if (dev < 4) calmDev = calmDev ? calmDev * 0.9 + dev * 0.1 : dev;
+
+  // a modal screen (SETUP / motion permission) is up: pause sensor control
+  // so a swing can't throw while you're in the menus
+  if (controlsSuspended) {
+    if (swinging) resetSwing();
+    resetTwist();
+    return;
+  }
 
   // swing detection only runs while we're allowed to throw — a swing must
   // never accumulate while waiting and release the moment a turn starts
@@ -345,7 +473,8 @@ function onMotion(e) {
 
   if (swinging) {
     swingPeak = Math.max(swingPeak, dev);
-    const active = dev > SWING_OFF; // still accelerating — the swing itself
+    const cfg = swingCfg();
+    const active = dev > cfg.off; // still accelerating — the swing itself
     if (active) {
       swingActiveMs += dt * 1000; // ms of sustained acceleration
       // snapshot the SHARED smoothed series; the final active sample (the
@@ -354,16 +483,16 @@ function onMotion(e) {
     } else {
       // motion stopped. A real swing SUSTAINS acceleration for a while; a
       // pick-up jolt is a brief spike — those are discarded, not thrown.
-      if (swingActiveMs >= MIN_ACTIVE_MS && swingPeak >= SWING_MIN_PEAK) {
-        const power = clamp((swingPeak - SWING_ON) / (MAX_PEAK - SWING_ON), 0.15, 1);
+      if (swingActiveMs >= MIN_ACTIVE_MS && swingPeak >= cfg.minPeak) {
+        const power = clamp((swingPeak - cfg.on) / (MAX_PEAK - cfg.on), 0.15, 1);
         latestPower = power; // remembered for button mode
-        if (!buttonMode) sendThrow(power, spinFromTwist(freshTwist(releaseTwist)));
+        if (!usesButtonThrow()) sendThrow(power, spinFromTwist(freshTwist(releaseTwist)));
       }
       swinging = false;
       swingPeak = 0; swingActiveMs = 0; releaseTwist = 0;
       swingHint.classList.remove('armed');
     }
-  } else if (dev > SWING_ON && now - lastThrowAt > COOLDOWN_MS) {
+  } else if (dev > swingCfg().on && now - lastThrowAt > COOLDOWN_MS) {
     // swing starting: if we were still live-aiming, lock the posed aim now
     if (aimLiveSince) { lockedAngles = lastLiveAngles; aimLocked = true; }
     swinging = true;
@@ -456,8 +585,14 @@ const SCHEME_DESC = {
   wheel: 'Tilt the phone like a steering wheel to move the ball. Turn it left/right to aim.',
   twist: 'Turn the phone left/right to move the ball. Tilt it to aim.',
   swing: 'Ball stays centered — just turn to aim and swing to throw. Easiest.',
+  flick: 'Ball stays centered — turn to aim; a gentle flick throws (needs less force).',
+  pad: 'No gyroscope needed — drag your thumb on the pad to aim, then tap THROW.',
 };
-const settings = { scheme: 'wheel', sens: 1 };
+// DEFAULTS: SWING scheme + LOW sensitivity (new out-of-the-box behavior).
+// Deliberately saved choices are preserved; only absent/invalid saved
+// settings fall back to these.
+const DEFAULT_SETTINGS = { scheme: 'swing', sens: 0.6 };
+const settings = { ...DEFAULT_SETTINGS };
 try {
   const saved = JSON.parse(localStorage.getItem('sl-phone-settings') || 'null');
   if (saved && saved.scheme in SCHEME_DESC && Number.isFinite(saved.sens)) {
@@ -474,13 +609,14 @@ function mappedAngles() {
   return applyControlScheme(angles, settings.scheme, settings.sens);
 }
 
-const settingsScreen = $('settings-screen');
 $('setup-btn').addEventListener('click', () => { show(settingsScreen); refreshSettingsUI(); });
 $('settings-back').addEventListener('click', () => show(ctlScreen));
 $('scheme-row').querySelectorAll('.seg-btn').forEach((b) => {
   b.addEventListener('click', () => {
     settings.scheme = b.dataset.scheme;
     saveSettings(); refreshSettingsUI(); updateThrowUI();
+    // scheme change: the old pose/swing/twist state is void
+    unlockAim(); resetSwing(); resetTwist();
   });
 });
 $('sens-row').querySelectorAll('.seg-btn').forEach((b) => {
@@ -497,8 +633,36 @@ function refreshSettingsUI() {
   $('scheme-desc').textContent = SCHEME_DESC[settings.scheme];
 }
 
+// --------------------- TOUCH PAD scheme (no gyro needed) ------------------
+// Drag on the tilt pad to steer/aim; the pose persists after lifting the
+// finger. Works on devices with no gyroscope or denied motion permission.
+let padTouchId = null;
+function padFromEvent(e) {
+  const r = tiltStage.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const nx = Math.max(-1, Math.min(1, ((e.clientX - r.left) / r.width) * 2 - 1));
+  const ny = Math.max(-1, Math.min(1, ((e.clientY - r.top) / r.height) * 2 - 1));
+  angles.steer = nx * MAX_STEER;
+  angles.aim = ny * MAX_AIM;
+}
+tiltStage.addEventListener('pointerdown', (e) => {
+  if (settings.scheme !== 'pad') return;
+  e.preventDefault();
+  padTouchId = e.pointerId;
+  try { tiltStage.setPointerCapture(e.pointerId); } catch { /* fine */ }
+  padFromEvent(e);
+});
+tiltStage.addEventListener('pointermove', (e) => {
+  if (settings.scheme !== 'pad' || e.pointerId !== padTouchId) return;
+  padFromEvent(e);
+});
+const padEnd = (e) => { if (e.pointerId === padTouchId) padTouchId = null; };
+tiltStage.addEventListener('pointerup', padEnd);
+tiltStage.addEventListener('pointercancel', padEnd);
+
 // ------------------------------ controls ---------------------------------
 let buttonMode = false;  // false = swing throw (default), true = button throw
+const usesButtonThrow = () => settings.scheme === 'pad' || buttonMode; // pad = always button
 let canThrow = false;    // mirrored from the game via phase messages
 let waitText = null;      // why we're waiting (from the game), or null
 let latestPower = 0.62;  // remembered from the last real swing (button mode)
@@ -506,7 +670,6 @@ let latestPower = 0.62;  // remembered from the last real swing (button mode)
 modeBtn.addEventListener('click', () => {
   buttonMode = !buttonMode;
   modeBtn.textContent = buttonMode ? 'MODE: BUTTON' : 'MODE: SWING';
-  throwBtn.classList.toggle('hidden', !buttonMode);
   unlockAim();
   resetTwist(); // mode change — the old twist series is void
   updateThrowUI();
@@ -532,6 +695,17 @@ throwBtn.addEventListener('click', () => {
 });
 
 function updateThrowUI() {
+  // pad mode: the drag surface must not scroll/zoom the page
+  tiltStage.classList.toggle('pad-mode', settings.scheme === 'pad');
+  // THROW button visible whenever the throw is a button (pad = always)
+  throwBtn.classList.toggle('hidden', !usesButtonThrow());
+  if (settings.scheme === 'pad') {
+    swingHint.textContent = canThrow
+      ? 'Drag the pad to aim — tap THROW'
+      : (waitText || 'Waiting for your turn…');
+    throwBtn.disabled = !canThrow;
+    return;
+  }
   const aimWord = settings.scheme === 'twist' ? 'tilt' : 'turn';
   swingHint.textContent = canThrow
     ? (buttonMode ? `${aimWord[0].toUpperCase() + aimWord.slice(1)} to aim — tap THROW`
@@ -566,6 +740,13 @@ function startSensors() {
   setStatus('warn', 'Connected');
   requestAnimationFrame(tick);
   updateThrowUI();
+  // no sensor data at all (gyro-less device, denied permission)? point at
+  // TOUCH PAD mode instead of leaving a dead controller
+  setTimeout(() => {
+    if (!sawOrient && !sawMotion && settings.scheme !== 'pad') {
+      setStatus('warn', 'No motion sensors — SETUP → TOUCH PAD');
+    }
+  }, 4000);
 }
 
 // Latency display comes from the game's perspective; we also show our own

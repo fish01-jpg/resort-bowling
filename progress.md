@@ -395,3 +395,124 @@ Round 8 fixes (review pass 3):
   event — never only on the 400ms watchdog. Missing samples read as zero
   spin; a valid zero sample cannot revive the old snapshot (releaseTwist is
   only reassigned from live samples while a swing is active).
+
+Round 9 fixes (phone connection + setup screen + modes):
+
+- Phone connection reliability: a public TURN relay + extra STUN servers
+  are in the ICE config (STUN-only pairing fails on symmetric-NAT networks
+  — hotspot/school Wi-Fi); the phone has a 20s connect watchdog that fails
+  with a retry prompt instead of hanging on the loading screen; pairing
+  errors/progress now show ON THE PAIRING SCREEN (the status header lives on
+  the controller screen, which isn't visible before the channel opens); the
+  phone's controller id is persisted in localStorage so a reload or
+  reconnect with the same QR is accepted instead of "another controller
+  already claimed this session"; a stale never-paired claim (crashed
+  phone) can be taken over after 90s; ICE 'failed' is watched at both the
+  connection and ICE level (some mobile browsers don't fire
+  connectionstatechange reliably).
+- Setup screen: show() now hides EVERY screen — the settings screen was
+  missing from the hide list, so SETUP elements stayed stacked over the
+  controls after leaving the menu (also made buttons unresponsive, the
+  "controls locked" glitch).
+- Controls no longer stick: the hard accelerometer-stillness gate is gone
+  (noisy sensors made the aim lock permanently — controls felt dead most
+  of the time); holding a NEW in-stance pose for ~0.5s re-opens live
+  aiming automatically; the in-range gate still rejects carrying the
+  phone.
+- Defaults: SWING scheme + LOW sensitivity (0.6) — older saved settings
+  are reset once to the new defaults (v2 marker in localStorage).
+- New modes: FLICK (same as swing but a much gentler release — helps
+  devices whose accelerometers under-report) and TOUCH PAD (drag on the
+  pad to aim, tap THROW — no gyroscope or motion permission needed; also
+  offered from the motion-permission screen as an escape hatch, and a hint
+  appears automatically when no sensor data arrives at all).
+
+Round 9 fixes (review pass — reconnect + control flow):
+
+- Reconnect actually works now: signaling docs carry a negotiation
+  "generation". When the host receives a DIFFERENT answer for a session it
+  already negotiated (phone reloaded/reconnected with the same QR or code),
+  it tears down the dead peer and publishes a FRESH offer (gen+1) on the same
+  doc — same code/QR, same slot. The phone stays subscribed to the doc and
+  renegotiates on the generation bump. The stored uid alone passed the claim
+  check but the new answer was ignored before — "worked before, now stuck
+  on connecting".
+- The whole connect attempt is bounded (30s overall, 20s channel-open
+  watchdog): Firestore lookups/claims can no longer leave CONNECT disabled
+  forever; late completions after cancellation are dropped (_aborted guard),
+  close() settles pending waiters, and CONNECT retries reuse the QR token
+  (QR users never typed a code). Code lookup now also accepts sessions this
+  device already owns, so retry-by-code works after a failed attempt.
+- TOUCH PAD flow is self-contained: THROW is visible whenever the throw is a
+  button (pad = always), sensor-driven swings are disabled in pad mode, and
+  scheme changes reset the aim/swing/twist state (no stale lock bleeding
+  into the pad pose). The pad drag surface sets touch-action: none.
+- Aim gate: the stance check now uses the RAW extracted angles (mapped
+  steer is zeroed in swing/flick, so it could never gate) and an ADAPTIVE
+  stillness threshold (EMA of the calm noise floor — a noisy accelerometer
+  can no longer lock the controls permanently). The auto re-aim requires a
+  still, in-stance, deliberately different pose held ~0.5s — carrying the
+  phone (out of range / not still) still can't re-aim.
+- Sensor control is suspended while the SETUP or motion-permission screen
+  is up — a swing can't throw while you're in the menus. Permission-denial
+  errors now show on the motion screen itself (motion-err), and the
+  no-sensor hint only counts motion events with usable readings.
+- Saved control settings are preserved (only absent/invalid saved settings
+  fall back to the new SWING + LOW defaults).
+
+Round 10 fixes (review pass — robustness + race hardening):
+
+- The public TURN relay credentials were REMOVED (they could not be
+  verified as provider-sanctioned): ICE now tries multiple STUN servers
+  only, and the README points at RTC_OPTS for adding your own TURN relay
+  on strict networks.
+- Answers are published TRANSACTIONALLY (claim ownership + offer generation
+  checked inside the write): a superseded claimant or a stale attempt can
+  no longer overwrite a newer negotiation. Each attempt also stamps
+  answerBy with a per-attempt id so the host can tell attempts apart.
+- The host marks the signaling doc 'connected' when the reliable channel
+  actually opens; the stale-claim takeover now only takes a session that
+  is older than 90s AND never reached a live connection — a connected
+  session is never stolen.
+- Transient disconnect recovery on BOTH sides: if the ICE path drops and
+  recovers while the reliable channel is still open, connection state
+  'connected' (or ICE connected/completed) re-marks the session live and
+  restarts the ping instead of stranding it as 'disconnected'.
+- All peer callbacks capture their RTCPeerConnection and bail on stale
+  events (a replaced peer's late events can no longer corrupt state).
+- Renegotiation is bounded (20s channel-open watchdog) and refreshes are
+  rate-limited (2s) so two tabs sharing a device id can't ping-pong
+  offers forever. A refreshed offer also resets the sample sequence
+  number (the reloaded phone restarts its counter).
+- The aim dwell is now a STABLE-POSE dwell: if the raw pose drifts more
+  than ~0.02 rad during the 400ms dwell the dwell restarts — the lock
+  only captures a genuinely held stance.
+- close() now cancels (rejects) a pending connect waiter instead of
+  resolving it, and code lookup is bounded like the rest of the attempt.
+
+Round 11 fixes (review pass — waiter sharing + takeover semantics + tests):
+
+- One shared connect waiter: a renegotiation RENEWS the existing watchdog
+  deadline instead of stacking a second one (a second watchdog could kill
+  the healthy replacement attempt). This also fixed a TDZ crash in the
+  waiter construction and a wrong `snap.exists()` call (Firestore's
+  exists is a property, not a method — would have thrown in production).
+- The host marks the doc 'connected' when the reliable channel opens and
+  'disconnected' when it closes — so the stale-claim takeover is now
+  exactly "old claim AND session not currently live" (a live session is
+  never stolen; a dead one is recoverable).
+- Stale channel events are ignored on both sides (callbacks capture
+  their peer and bail), including channel-close from a REPLACED peer.
+- The renegotiation deadline covers the whole attempt (SDP + Firestore
+  transaction too), reports an actionable 'reconnect timed out' error
+  instead of failing silently, and a newer generation seen mid-
+  renegotiation is retained and processed afterwards.
+- Dampened host refreshes are SCHEDULED (run when the 2s window expires)
+  instead of dropped; a refreshed offer resets the sample counter.
+- The re-aim dwell is also a stable-pose dwell (drift restarts it).
+- NEW offline lifecycle tests (tests/rtc.test.mjs, 19 checks): fake
+  in-memory Firestore + fake RTCPeerConnection — covers generation
+  refresh during initial connection, survival past the ORIGINAL
+  watchdog deadline, shared-waiter renewal, stale channel-close events,
+  renegotiation timeout/error reporting, and stale-claim takeover
+  semantics. Still NO live testing (per the project rules).

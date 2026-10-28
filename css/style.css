@@ -702,6 +702,7 @@ kbd {
 }
 
 .tilt-stage.hidden { display: none; }
+.tilt-stage.pad-mode { touch-action: none; } /* drag surface: no scroll/zoom */
 .tilt-stage {
   position: relative;
   width: min(88vw, 340px);

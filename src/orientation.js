@@ -88,14 +88,17 @@ export function axisAngle(x, y, z, angle) {
 
 /**
  * Map extracted angles to controller output for a control-scheme preset.
- *   'wheel'  (default): wheel-tilt steers the ball, turning aims (Wii-style)
- *   'twist'           : turning steers the ball, wheel-tilt aims (swapped)
- *   'swing'           : ball stays centered; turning aims; swing throws
+ *   'wheel'          : wheel-tilt steers the ball, turning aims (Wii-style)
+ *   'twist'          : turning steers the ball, wheel-tilt aims (swapped)
+ *   'swing'          : ball stays centered; turning aims; swing throws
+ *   'flick'          : like swing, but the release needs far less force
+ *   'pad'            : touch steering — angles come from the drag, not sensors
  * `sensitivity` scales both angles (a gain > 1 = less tilt needed).
  */
 export function applyControlScheme({ steer, aim }, scheme = 'wheel', sensitivity = 1) {
   let s = steer, a = aim;
   if (scheme === 'twist') { const t = s; s = a; a = t; }
-  else if (scheme === 'swing') s = 0;
+  else if (scheme === 'swing' || scheme === 'flick') s = 0;
+  // 'wheel' and 'pad' keep the extracted order (pad feeds angles by touch)
   return { steer: s * sensitivity, aim: a * sensitivity };
 }

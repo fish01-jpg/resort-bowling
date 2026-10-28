@@ -27,6 +27,8 @@
     <h1 class="phone-title">MOTION ACCESS</h1>
     <p class="phone-sub">The controller needs your gyroscope (like a Wii remote).</p>
     <button id="enable-motion" class="phone-btn">ENABLE MOTION</button>
+    <button id="touch-mode-btn" class="phone-btn small">USE TOUCH MODE INSTEAD</button>
+    <p class="settings-desc">No gyroscope or permission denied? Touch mode works without one.</p>
     <p class="phone-err" id="motion-err"></p>
   </section>
 
@@ -71,7 +73,9 @@
     <div class="seg-row" id="scheme-row">
       <button class="seg-btn" data-scheme="wheel">WHEEL</button>
       <button class="seg-btn" data-scheme="twist">TWIST</button>
-      <button class="seg-btn" data-scheme="swing">SWING ONLY</button>
+      <button class="seg-btn" data-scheme="swing">SWING</button>
+      <button class="seg-btn" data-scheme="flick">FLICK</button>
+      <button class="seg-btn" data-scheme="pad">TOUCH PAD</button>
     </div>
     <p class="settings-desc" id="scheme-desc"></p>
     <p class="phone-label">Sensitivity</p>
