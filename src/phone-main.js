@@ -267,22 +267,21 @@ const MAX_AIM = 0.45;   // radians of turn for full aim
 
 // ------------------------------ swing detection --------------------------
 // devicemotion-based state machine: idle -> swinging -> released.
-// CONTROLLER FEEL — explicit aim states:
-//   LIVE    phone held still in stance -> aim follows the phone on screen
-//   LOCKED  after a short dwell the pose is CAPTURED; the on-phone
-//           indicator, the transmitted aim, and the thrown aim are the same
-//           value. Lowering the phone to your side, carrying it, or
-//           mid-swing cannot change it. Re-opening aiming is ALWAYS an
-//   -> LIVE explicit action (the RE-AIM button, RECENTER, the mode toggle,
-//           or a fresh turn) — never motion itself, so a pick-up can never
-//           re-aim the ball.
+// CONTROLLER FEEL — one rule: the aim is LIVE while the phone is held in
+// stance. No dwell, no auto-lock: tilt and the ball follows; pause to
+// line up a shot and it STAYS live (the old 400ms auto-lock made aiming
+// feel "locked up" — it is gone). The pose is CAPTURED AT SWING START so
+// the swing itself can never steer the ball: what the screen shows when
+// the swing begins is exactly what is thrown. Lowering the phone to your
+// side or carrying it (out of the stance range) freezes the last stance
+// pose — a pick-up mid-turn can never re-aim the ball.
 // Phone rotation comes from WRIST TWIST at the release flick (the final
 // active motion sample) — rotating the phone while carrying or picking it
 // up can never become hook; only the deliberate twist at release does.
-const SWING_ON = 4.5;    // m/s^2 linear acceleration deviation to start a swing
-const SWING_OFF = 2.5;   // ...to end it
+const SWING_ON = 3.6;    // m/s^2 linear acceleration deviation to start a swing
+const SWING_OFF = 1.9;   // ...to end it
 const MIN_ACTIVE_MS = 120;   // sustained acceleration required for a real swing
-const SWING_MIN_PEAK = 6.0;  // weaker motions are pick-up jolts, not throws
+const SWING_MIN_PEAK = 4.6;  // weaker motions are pick-up jolts, not throws
 // FLICK scheme: a much gentler release — some devices' accelerometers
 // under-report, and not everyone wants to whip the phone
 const FLICK_ON = 2.6, FLICK_OFF = 1.4, FLICK_MIN_PEAK = 3.6;
@@ -291,51 +290,30 @@ const swingCfg = () => settings.scheme === 'flick'
   : { on: SWING_ON, off: SWING_OFF, minPeak: SWING_MIN_PEAK };
 const COOLDOWN_MS = 700;
 const MAX_PEAK = 20;     // m/s^2 deviation mapped to power 1.0
-const AIM_STILL_DEV = 2.5; // base stillness threshold (m/s^2 of deviation)
-const AIM_LATCH_MS = 400;   // dwell before the aim locks for the throw
-const DWELL_DRIFT = 0.02;  // rad of RAW pose drift that restarts the dwell (must be genuinely still to latch)
-const RELATCH_MOVE = 0.06;  // rad of pose change that counts as a deliberate re-aim
-const AIM_RELATCH_MS = 500; // hold the new pose this long to re-open live aiming
 const TWIST_DEADZONE = 40;  // deg/s — smaller wrist motion is noise, not spin
 const TWIST_FULL = 300;     // deg/s of release twist for full hook
 
-let lastDev = 0; // latest acceleration deviation (freshness for the stillness gate)
-let calmDev = 0;  // EMA of the accelerometer's calm noise floor (adaptive gate)
-const stillEnough = () => lastDev < Math.max(AIM_STILL_DEV, calmDev * 1.8);
-let aimLocked = false;      // LOCKED state — aim captured, frozen
-let lockedAngles = null;    // the captured pose
+let aimLocked = false;      // true only mid-swing (pose captured at swing start)
+let lockedAngles = null;    // the captured release pose
 let lastLiveAngles = { steer: 0, aim: 0 }; // last live pose shown on screen
-let aimLiveSince = 0; // when the current live-aiming dwell began (0 = not aiming)
-let dwellPose = null; // the RAW pose when the dwell began — used to detect drift
-let relatchSince = 0; // when a deliberate pose change away from the lock began
-let relatchPose = null; // the RAW pose when the re-aim dwell began (drift check)
 let liveTwist = 0;    // smoothed wrist-twist rate (deg/s) — aim-guide preview
 let releaseTwist = 0;  // twist rate at the release flick (the throw's spin)
 
 function unlockAim() {
   aimLocked = false;
   lockedAngles = null;
-  aimLiveSince = 0;
-  dwellPose = null;
-  relatchSince = 0;
-  relatchPose = null;
 }
 
 /**
  * The angles to steer/aim with — the SAME value a throw uses (throwAngles),
- * so the screen can never diverge from the ball's line. LIVE while held
- * still in stance; after a short dwell the pose is CAPTURED (LOCKED).
- * Carrying the phone or picking it up freezes it (out of range / not still).
- * The lock is no longer sticky: deliberately hold a NEW still in-stance pose
- * for ~0.5s and live aiming re-opens by itself; the RE-AIM button, RECENTER
- * and the mode toggle always work too. TOUCH PAD mode skips the latch — the
- * thumb is the intent. The stance gate uses the RAW extracted angles (the
- * mapped steer is zeroed in swing/flick schemes, so it can't gate anything)
- * and an ADAPTIVE stillness threshold (a noisy accelerometer no longer locks
- * the controls permanently).
+ * so the screen can never diverge from the ball's line. LIVE whenever the
+ * phone is in stance; mid-swing and while carried it freezes at the
+ * captured pose. TOUCH PAD mode is always live — the thumb is the intent.
+ * The stance gate uses the RAW extracted angles (the mapped steer is
+ * zeroed in swing/flick schemes, so it can't gate anything).
  */
 function currentControlAngles() {
-  // TOUCH PAD: always live, never latches
+  // TOUCH PAD: always live
   if (settings.scheme === 'pad') {
     const m = normalizedPose(mappedAngles());
     lastLiveAngles = m;
@@ -343,56 +321,18 @@ function currentControlAngles() {
     return m;
   }
   // when the game has this phone paused (not its turn / ball in play /
-  // re-arming), the big label must SAY so — a stale "AIM LOCKED" there is
-  // what made the controls look permanently locked
-  const label = !canThrow
-    ? 'WAITING'
-    : aimLocked ? 'AIM LOCKED' : 'TILT TO AIM';
+  // re-arming), the big label must SAY so — a stale label there is what
+  // made the controls look permanently locked
+  const label = !canThrow ? 'WAITING' : 'TILT TO AIM';
   if (tiltLabel.textContent !== label) tiltLabel.textContent = label;
-  if (swinging) { aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null; return throwAngles(); } // mid-swing: frozen
+  if (swinging) return throwAngles(); // mid-swing: frozen at the captured pose
   const raw = angles; // RAW extracted pose — the stance gate (pre-scheme)
   const inRange = Math.abs(raw.steer) <= MAX_STEER * 1.25 && Math.abs(raw.aim) <= MAX_AIM * 1.25;
-  const still = stillEnough();
-  if (!inRange || !still) { aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null; return throwAngles(); } // carried / at side
-  // accepted pose: normalized ONCE — the indicator, the transmitted state and
-  // the throw all use this exact value
+  if (!inRange) return throwAngles(); // carried / at side: hold the last stance pose
+  // in stance: LIVE aiming — no dwell, no auto-lock. The pose is captured
+  // at SWING START (see the swing detector), so the throw is exactly what
+  // the screen showed the moment the swing began.
   const m = normalizedPose(mappedAngles());
-  if (aimLocked && lockedAngles) {
-    // AUTO RE-AIM: deliberately hold a DIFFERENT still in-stance pose and
-    // live aiming re-opens by itself — the lock can't stick anymore.
-    // The re-aim dwell is a STABLE-POSE dwell too: continuous drift while
-    // "different from the lock" doesn't count — only a genuinely held new
-    // pose (raw pose within ~0.02 rad of where the dwell began) unlocks.
-    const moved = Math.abs(m.steer - lockedAngles.steer) + Math.abs(m.aim - lockedAngles.aim);
-    if (moved > RELATCH_MOVE) {
-      if (!relatchSince) {
-        relatchSince = performance.now();
-        relatchPose = { steer: raw.steer, aim: raw.aim };
-      } else if (relatchPose &&
-                 Math.abs(raw.steer - relatchPose.steer) + Math.abs(raw.aim - relatchPose.aim) > DWELL_DRIFT) {
-        // still moving — restart the re-aim dwell from the new pose
-        relatchSince = performance.now();
-        relatchPose = { steer: raw.steer, aim: raw.aim };
-      } else if (performance.now() - relatchSince >= AIM_RELATCH_MS) unlockAim();
-    } else { relatchSince = 0; relatchPose = null; }
-    if (aimLocked && lockedAngles) return lockedAngles; // still LOCKED: frozen
-  }
-  // still, in stance, not locked: LIVE aiming
-  if (!aimLiveSince) {
-    aimLiveSince = performance.now();
-    dwellPose = { steer: raw.steer, aim: raw.aim };
-  } else if (dwellPose &&
-             Math.abs(raw.steer - dwellPose.steer) + Math.abs(raw.aim - dwellPose.aim) > DWELL_DRIFT) {
-    // the pose DRIFTED during the dwell (aiming motion, not a held stance) —
-    // restart the dwell so the lock only captures a genuinely stable pose
-    aimLiveSince = performance.now();
-    dwellPose = { steer: raw.steer, aim: raw.aim };
-  }
-  if (performance.now() - aimLiveSince >= AIM_LATCH_MS) {
-    lockedAngles = m; aimLocked = true; aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null;
-    lastLiveAngles = m; // commit + transmit + throw the same pose
-    return lockedAngles;
-  }
   lastLiveAngles = m;
   return m;
 }
@@ -416,8 +356,8 @@ const TWIST_FRESH_MS = 400; // older than this = stale, spin reads 0
 
 /**
  * Invalidate the twist series: missing sensor data must read as zero spin.
- * Called the moment a sample is unusable, on turn handover, RE-AIM, mode
- * change, RECENTER, and disconnect — never only on the timeout below.
+ * Called the moment a sample is unusable, on turn handover, RECENTER, mode
+ * change, and disconnect — never only on the timeout below.
  */
 function resetTwist() {
   liveTwist = 0;
@@ -440,11 +380,6 @@ function onMotion(e) {
   const acc = e.accelerationIncludingGravity;
   if (!acc || acc.x == null) return;
   sawMotion = true; // usable data only — null-reading events don't count
-  const mag = Math.hypot(acc.x, acc.y, acc.z);
-  const dev = Math.abs(mag - 9.81);
-  lastDev = dev; // freshness for the aim stillness gate (always, even off-turn)
-  // track the sensor's calm noise floor (adaptive stillness threshold)
-  if (dev < 4) calmDev = calmDev ? calmDev * 0.9 + dev * 0.1 : dev;
 
   // a modal screen (SETUP / motion permission) is up: pause sensor control
   // so a swing can't throw while you're in the menus
@@ -475,6 +410,7 @@ function onMotion(e) {
 
   const dt = lastMotionTs ? Math.min(0.1, (now - lastMotionTs) / 1000) : 0;
   lastMotionTs = now;
+  const dev = Math.abs(Math.hypot(acc.x, acc.y, acc.z) - 9.81);
 
   if (swinging) {
     swingPeak = Math.max(swingPeak, dev);
@@ -495,11 +431,13 @@ function onMotion(e) {
       }
       swinging = false;
       swingPeak = 0; swingActiveMs = 0; releaseTwist = 0;
+      unlockAim(); // swing over — back to live aiming for the next ball
       swingHint.classList.remove('armed');
     }
   } else if (dev > swingCfg().on && now - lastThrowAt > COOLDOWN_MS) {
-    // swing starting: if we were still live-aiming, lock the posed aim now
-    if (aimLiveSince) { lockedAngles = lastLiveAngles; aimLocked = true; }
+    // swing starting: capture the posed aim NOW — the swing itself must not
+    // steer the ball (what the screen shows is what is thrown)
+    lockedAngles = lastLiveAngles; aimLocked = true;
     swinging = true;
     swingStart = now; swingPeak = dev; swingActiveMs = 0; releaseTwist = 0;
     swingHint.classList.add('armed');
@@ -687,7 +625,10 @@ calBtn.addEventListener('click', () => {
 });
 
 reaimBtn.addEventListener('click', () => {
-  unlockAim(); // explicit re-aim: back to live aiming
+  // quick RECENTER: re-zero the neutral to the current stance (same as the
+  // settings-screen button, without the trip through SETUP)
+  calibrate();
+  unlockAim();
   resetTwist();
   if (navigator.vibrate) navigator.vibrate(10);
 });

@@ -535,3 +535,23 @@ controls-locked behavior). Fixes:
 - HONEST LABEL: while the game has the phone paused (not its turn, ball
   in play, re-arming), the big label now reads WAITING instead of a stale
   AIM LOCKED — the reason shows in the hint line under it.
+
+Round 13: "still says AIM LOCKED — unlocks for a quarter second, blocks again"
+
+The v2 phone showed the truth: the aim WAS re-locking after ~400ms of
+stillness — that is the AIM DWELL, and it fought the user's aiming style
+(pause to line up a shot -> lock -> tilt does nothing -> RE-AIM -> 400ms
+-> lock again). The dwell auto-lock is REMOVED:
+
+- The aim is now LIVE the entire time the phone is in stance — tilt and
+  the ball follows; pausing to line up a shot no longer locks anything.
+- WYSIWYG is preserved differently: the pose is captured AT SWING START,
+  so the swing motion itself can never steer the ball.
+- The AIM LOCKED label/state is gone (mid-swing freeze remains).
+- The RE-AIM button (meaningless without a lock) is now a quick RECENTER
+  (re-zero the neutral to the current stance, same as in SETUP).
+- Swing detection thresholds lowered (ON 4.5 -> 3.6 m/s^2, OFF 2.5 -> 1.9,
+  MIN_PEAK 6.0 -> 4.6): gentler swings — and devices whose accelerometers
+  under-report — now register as throws. The 120ms sustained-motion
+  filter still discards pick-up jolts.
+- Version bumped to v3 (phone badge shows v3).
