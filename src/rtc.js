@@ -42,21 +42,14 @@ const ICE_GATHER_TIMEOUT_MS = 4000;
 const CLIENT_CONNECT_TIMEOUT_MS = 20000; // phone gives up + retries instead of hanging
 const STALE_CLAIM_MS = 90000; // a claimed-but-never-paired session can be taken over
 
-// STUN alone fails on symmetric-NAT / strict networks (hotspots, school Wi-Fi) —
-// a public TURN relay is the fallback path so pairing doesn't depend on the
-// local network being WebRTC-friendly.
+// STUN-only pairing fails on symmetric-NAT / strict networks (hotspots,
+// school Wi-Fi). Multiple STUN providers help; a TURN relay would cover the
+// rest — add your own credentials (e.g. a free Metered account) here if your
+// players are on locked-down networks. No public TURN is bundled: the
+// well-known openrelay credentials are not confirmed by the provider.
 const ICE_SERVERS = [
   { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
   { urls: 'stun:stun.cloudflare.com:3478' },
-  {
-    urls: [
-      'turn:openrelay.metered.ca:80',
-      'turn:openrelay.metered.ca:443',
-      'turn:openrelay.metered.ca:443?transport=tcp',
-    ],
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
 ];
 const RTC_OPTS = { iceServers: ICE_SERVERS, iceCandidatePoolSize: 4 };
 
@@ -198,13 +191,14 @@ export class PhoneHost {
       if (!s.pc.remoteDescription) {
         // normal first answer for this generation
         s.appliedAnswer = data.answer;
+        s.answerBy = data.answerBy || null;
         s.pc.setRemoteDescription(JSON.parse(data.answer)).catch((e) => {
           this.onStatus(slot, 'error', 'bad answer: ' + e.message);
         });
       } else {
-        // a DIFFERENT answer for a session we already negotiated — the phone
-        // reloaded or reconnected with the same QR/code. The old peer is dead;
-        // publish a fresh offer (new generation) and let it reconnect.
+        // rate-limit: two live tabs sharing the device uid could otherwise
+        // ping-pong refreshes forever
+        if (Date.now() - (s.lastRefreshAt || 0) < 2000) return;
         this._refreshOffer(s);
       }
     }, (err) => { if (!s.closed) this.onStatus(slot, 'error', err.message); });
@@ -220,9 +214,20 @@ export class PhoneHost {
     s.ctlCh = s.pc.createDataChannel('ctl', { ordered: true });
     this._wireChannels(s);
 
-    s.pc.addEventListener('connectionstatechange', () => {
-      if (!s.pc || s.closed) return;
-      const st = s.pc.connectionState;
+    const pc = s.pc; // capture: stale callbacks must not touch a replacement peer
+    pc.addEventListener('connectionstatechange', () => {
+      if (s.pc !== pc || s.closed) return;
+      const st = pc.connectionState;
+      if (st === 'connected') {
+        // transient ICE recovery: an EXISTING open channel is enough — the
+        // reliable channel survives a drop/recover without a reopen event
+        if (!s.connected && s.ctlCh && s.ctlCh.readyState === 'open') {
+          s.connected = true;
+          this.onStatus(s.slot, 'connected');
+          this._startPing(s);
+        }
+        return;
+      }
       if (st === 'failed' || st === 'disconnected' || st === 'closed') {
         if (s.connected) {
           s.connected = false;
@@ -233,12 +238,18 @@ export class PhoneHost {
     });
     // some mobile browsers don't fire connectionstatechange reliably —
     // watch ICE too so a dead slot is reported instead of looking 'waiting'
-    s.pc.addEventListener('iceconnectionstatechange', () => {
-      if (!s.pc || s.closed) return;
-      if (s.pc.iceConnectionState === 'failed' && s.connected) {
+    pc.addEventListener('iceconnectionstatechange', () => {
+      if (s.pc !== pc || s.closed) return;
+      const ist = pc.iceConnectionState;
+      if (ist === 'failed' && s.connected) {
         s.connected = false;
         this.onStatus(s.slot, 'error');
         this._stopPing(s);
+      } else if ((ist === 'connected' || ist === 'completed')
+                 && !s.connected && s.ctlCh && s.ctlCh.readyState === 'open') {
+        s.connected = true;
+        this.onStatus(s.slot, 'connected');
+        this._startPing(s);
       }
     });
   }
@@ -253,6 +264,7 @@ export class PhoneHost {
   async _refreshOffer(s) {
     if (s.closed || s.refreshing) return;
     s.refreshing = true;
+    s.lastRefreshAt = Date.now();
     try {
       this._stopPing(s);
       if (s.pc) { try { s.pc.close(); } catch { /* already closed */ } s.pc = null; }
@@ -260,6 +272,7 @@ export class PhoneHost {
       s.connected = false;
       s.gen += 1;
       s.appliedAnswer = null;
+      s.lastSeq = -1; // the phone reloaded: its sample counter restarts at 0
       this._createPeer(s);
       const offer = await s.pc.createOffer();
       if (s.closed) return;
@@ -289,6 +302,11 @@ export class PhoneHost {
       s.connected = true;
       this.onStatus(s.slot, 'connected');
       this._startPing(s);
+      // mark the session LIVE in the doc — a connected session is never
+      // taken over by the stale-claim takeover path
+      updateDoc(doc(db(), COLLECTION, s.docId), {
+        status: 'connected', updatedAt: serverTimestamp(),
+      }).catch(() => {});
     });
     s.stateCh.addEventListener('message', (ev) => {
       try {
@@ -396,6 +414,7 @@ export class PhoneClient {
     this.ctlCh = null;
     this.docId = null;
     this.connected = false;
+    this.sid = token(); // per-attempt id (distinguishes tabs sharing the device uid)
     this._connWait = null; // resolves/rejects the watchdog in _connect
     this._aborted = false;  // set by close(): late Firestore writes are dropped
     this._unsub = null;     // doc watch for host offer refreshes (reconnect)
@@ -407,7 +426,7 @@ export class PhoneClient {
 
   /** Connect via the high-entropy token from the QR link. */
   async connectByToken(pairToken) {
-    await this._boundedConnect(String(pairToken).trim());
+    await this._bounded(() => this._connect(String(pairToken).trim()));
   }
 
   /**
@@ -417,6 +436,10 @@ export class PhoneClient {
    * works after a failed attempt, and a reload can reconnect by code.
    */
   async connectByCode(code) {
+    await this._bounded(() => this._lookupByCode(code));
+  }
+
+  async _lookupByCode(code) {
     code = String(code || '').trim().toUpperCase();
     const q = query(
       collection(db(), COLLECTION),
@@ -435,11 +458,11 @@ export class PhoneClient {
       if (!best || (data.createdAt || 0) > (best.data.createdAt || 0)) best = { id: d.id, data };
     }
     if (!best) throw new Error('That session expired — ask the host to re-pair');
-    await this._boundedConnect(best.id);
+    await this._connect(best.id);
   }
 
-  /** Bound the WHOLE attempt (lookup, claim, SDP, answer, channel-open). */
-  async _boundedConnect(docId) {
+  /** Bound the WHOLE attempt — lookup, claim, SDP, answer, channel-open. */
+  async _bounded(fn) {
     const attempt = ++this._attempt;
     const timeout = new Promise((_, reject) => {
       this._boundTimer = setTimeout(() => {
@@ -450,7 +473,7 @@ export class PhoneClient {
       }, CLIENT_CONNECT_TIMEOUT_MS + 10000);
     });
     try {
-      await Promise.race([this._connect(docId), timeout]);
+      await Promise.race([fn(), timeout]);
     } finally {
       clearTimeout(this._boundTimer);
     }
@@ -498,12 +521,27 @@ export class PhoneClient {
     await this.pc.setLocalDescription(answer);
     await waitIce(this.pc);
     if (this._aborted) throw new Error('cancelled');
-    await updateDoc(ref, {
-      answer: JSON.stringify(this.pc.localDescription),
-      answerGen: offerGen,
-      status: 'paired',
-      updatedAt: serverTimestamp(),
+    // Publish the answer TRANSACTIONALLY: only if we still own the claim and
+    // the offer generation is unchanged (a superseded claimant or a stale
+    // attempt must not overwrite a newer negotiation)
+    await runTransaction(db(), async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists()) throw new Error('Session not found');
+      const room = snap.data();
+      if ((room.expiresAt || 0) < Date.now()) throw new Error('That session expired');
+      if (room.claim && room.claim.uid !== this.uid) {
+        throw new Error('Another controller claimed this session');
+      }
+      if ((room.gen || 1) !== offerGen) throw new Error('Host restarted pairing — try again');
+      tx.update(ref, {
+        answer: JSON.stringify(this.pc.localDescription),
+        answerGen: offerGen,
+        answerBy: this.sid,
+        status: 'paired',
+        updatedAt: serverTimestamp(),
+      });
     });
+    if (this._aborted) return; // cancelled mid-write — don't subscribe
 
     // Subscribe BEFORE waiting for the channel: if the host refreshes its
     // offer (generation bump — e.g. it saw our reconnect answer and is
@@ -528,19 +566,23 @@ export class PhoneClient {
   _setupPeer() {
     if (this.pc) { try { this.pc.close(); } catch { /* already closed */ } }
     this.pc = new RTCPeerConnection(RTC_OPTS);
-    this.pc.addEventListener('datachannel', (ev) => {
+    const pc = this.pc; // capture: callbacks must not touch a replacement peer
+    pc.addEventListener('datachannel', (ev) => {
+      if (this.pc !== pc || this._aborted) return;
       const ch = ev.channel;
       if (ch.label === 'state') {
         this._stateCh = ch; // unreliable channel for orientation samples
       } else if (ch.label === 'ctl') {
         this.ctlCh = ch;
         ch.addEventListener('open', () => {
+          if (this.pc !== pc || this._aborted) return;
           this.connected = true;
           this.onStatus('connected');
           this.onOpen();
           if (this._connWait) this._connWait.done();
         });
         ch.addEventListener('message', (e) => {
+          if (this.pc !== pc) return;
           let m; try { m = JSON.parse(e.data); } catch { return; }
           if (m.t === 'ping' && m.ts) {
             this._sendCtl({ t: 'pong', ts: m.ts });
@@ -550,10 +592,20 @@ export class PhoneClient {
         ch.addEventListener('close', () => this.onStatus('disconnected'));
       }
     });
-    const pc = this.pc; // capture: callbacks outlive this.pc's replacement
     pc.addEventListener('connectionstatechange', () => {
       if (this.pc !== pc || this._aborted) return;
       const st = pc.connectionState;
+      if (st === 'connected') {
+        // transient ICE recovery: the reliable channel can survive a
+        // drop/recover without a reopen event — an open channel is enough
+        if (!this.connected && this.ctlCh && this.ctlCh.readyState === 'open') {
+          this.connected = true;
+          this.onStatus('connected');
+          this.onOpen();
+          if (this._connWait) this._connWait.done();
+        }
+        return;
+      }
       if (st === 'failed' || st === 'disconnected' || st === 'closed') {
         this.connected = false;
         this.onStatus(st === 'failed' ? 'error' : 'disconnected');
@@ -564,10 +616,17 @@ export class PhoneClient {
     // connectionstatechange('failed') when the path is impossible
     pc.addEventListener('iceconnectionstatechange', () => {
       if (this.pc !== pc || this._aborted) return;
-      if (pc.iceConnectionState === 'failed') {
+      const ist = pc.iceConnectionState;
+      if (ist === 'failed') {
         this.connected = false;
         this.onStatus('error');
         if (this._connWait) this._connWait.fail();
+      } else if ((ist === 'connected' || ist === 'completed')
+                 && !this.connected && this.ctlCh && this.ctlCh.readyState === 'open') {
+        this.connected = true;
+        this.onStatus('connected');
+        this.onOpen();
+        if (this._connWait) this._connWait.done();
       }
     });
   }
@@ -586,12 +645,27 @@ export class PhoneClient {
       await this.pc.setLocalDescription(answer);
       await waitIce(this.pc);
       if (this._aborted) return;
-      await updateDoc(doc(db(), COLLECTION, this.docId), {
-        answer: JSON.stringify(this.pc.localDescription),
-        answerGen: gen,
-        status: 'paired',
-        updatedAt: serverTimestamp(),
+      // transactional, same as the initial answer
+      await runTransaction(db(), async (tx) => {
+        const ref = doc(db(), COLLECTION, this.docId);
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error('Session not found');
+        const room = snap.data();
+        if (room.claim && room.claim.uid !== this.uid) {
+          throw new Error('Another controller claimed this session');
+        }
+        if ((room.gen || 1) !== gen) throw new Error('Offer changed again');
+        tx.update(ref, {
+          answer: JSON.stringify(this.pc.localDescription),
+          answerGen: gen,
+          answerBy: this.sid,
+          status: 'paired',
+          updatedAt: serverTimestamp(),
+        });
       });
+      // reconnect is bounded too: if the refreshed negotiation never opens
+      // the channel, fail with an actionable status instead of hanging
+      await this._awaitConnected(CLIENT_CONNECT_TIMEOUT_MS);
     } catch (e) {
       if (!this._aborted) this.onStatus('error', 'reconnect failed: ' + (e.message || e));
     } finally {
@@ -614,6 +688,7 @@ export class PhoneClient {
           this.close(); // tear down so a retry starts clean
           reject(new Error('Could not reach the game — tap CONNECT to try again'));
         },
+        cancel: () => { clearTimeout(timer); reject(new Error('Connection cancelled')); },
       };
     });
   }
@@ -643,7 +718,7 @@ export class PhoneClient {
     this._aborted = true;
     if (this._unsub) { this._unsub(); this._unsub = null; }
     if (this._boundTimer) { clearTimeout(this._boundTimer); this._boundTimer = null; }
-    if (this._connWait) { const w = this._connWait; this._connWait = null; w.done(); }
+    if (this._connWait) { const w = this._connWait; this._connWait = null; w.cancel(); }
     if (this.pc) { try { this.pc.close(); } catch {} this.pc = null; }
     this.connected = false;
   }

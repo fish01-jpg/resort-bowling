@@ -459,3 +459,33 @@ Round 9 fixes (review pass — reconnect + control flow):
   no-sensor hint only counts motion events with usable readings.
 - Saved control settings are preserved (only absent/invalid saved settings
   fall back to the new SWING + LOW defaults).
+
+Round 10 fixes (review pass — robustness + race hardening):
+
+- The public TURN relay credentials were REMOVED (they could not be
+  verified as provider-sanctioned): ICE now tries multiple STUN servers
+  only, and the README points at RTC_OPTS for adding your own TURN relay
+  on strict networks.
+- Answers are published TRANSACTIONALLY (claim ownership + offer generation
+  checked inside the write): a superseded claimant or a stale attempt can
+  no longer overwrite a newer negotiation. Each attempt also stamps
+  answerBy with a per-attempt id so the host can tell attempts apart.
+- The host marks the signaling doc 'connected' when the reliable channel
+  actually opens; the stale-claim takeover now only takes a session that
+  is older than 90s AND never reached a live connection — a connected
+  session is never stolen.
+- Transient disconnect recovery on BOTH sides: if the ICE path drops and
+  recovers while the reliable channel is still open, connection state
+  'connected' (or ICE connected/completed) re-marks the session live and
+  restarts the ping instead of stranding it as 'disconnected'.
+- All peer callbacks capture their RTCPeerConnection and bail on stale
+  events (a replaced peer's late events can no longer corrupt state).
+- Renegotiation is bounded (20s channel-open watchdog) and refreshes are
+  rate-limited (2s) so two tabs sharing a device id can't ping-pong
+  offers forever. A refreshed offer also resets the sample sequence
+  number (the reloaded phone restarts its counter).
+- The aim dwell is now a STABLE-POSE dwell: if the raw pose drifts more
+  than ~0.02 rad during the 400ms dwell the dwell restarts — the lock
+  only captures a genuinely held stance.
+- close() now cancels (rejects) a pending connect waiter instead of
+  resolving it, and code lookup is bounded like the rest of the attempt.
