@@ -10,7 +10,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/fireba
 import { PhoneClient } from './rtc.js';
 import {
   quatFromEuler, quatConj, quatMul, relativeRotation, extractAngles,
-  applyControlScheme, DEG,
+  applyControlScheme,
 } from './orientation.js';
 
 const FIREBASE_CONFIG = {
@@ -33,9 +33,12 @@ const codeInput = $('pair-code'), pairBtn = $('pair-btn'), pairErr = $('pair-err
 const enableBtn = $('enable-motion');
 const statusDot = $('status-dot'), statusText = $('status-text'), latency = $('latency');
 const slotBadge = $('slot-badge');
-const tilt = $('tilt-indicator'), tiltBg = $('tilt-fill');
+const tilt = $('tilt-indicator'), tiltBg = $('tilt-fill'), tiltStage = $('tilt-stage');
+const tiltLabel = $('tilt-label');
 const modeBtn = $('mode-btn'), throwBtn = $('throw-btn'), calBtn = $('cal-btn');
+const reaimBtn = $('reaim-btn');
 const swingHint = $('swing-hint');
+const gameButtons = $('game-buttons');
 
 let client = null;
 
@@ -79,15 +82,19 @@ async function connect(codeOrToken) {
     },
     onCtl(m) {
       if (m.t === 'phase') {
+        const wasMyTurn = canThrow;
         canThrow = !!m.canThrow;
         waitText = m.waitText || null;
         if (!canThrow) resetSwing(); // a swing must not carry across a turn
+        else if (!wasMyTurn) unlockAim(); // fresh turn: aim from scratch
         // slot = which phone we are (1-based); phones = how many are connected
         if (m.slot) {
           slotBadge.textContent = m.phones > 1 ? `P${m.slot}/${m.phones}` : `P${m.slot}`;
           slotBadge.classList.remove('hidden');
         }
         updateThrowUI();
+      } else if (m.t === 'ui') {
+        renderGameButtons(m.buttons || [], m.values, m.rev);
       }
     },
   });
@@ -162,11 +169,8 @@ function onOrient(e) {
 
   const rel = relativeRotation(qCal, qNow);
   angles = extractAngles(rel);
-
-  // visual (through the active scheme preset)
-  const m = mappedAngles();
-  tilt.style.transform = `translate(${(m.steer / MAX_STEER) * 130}%, ${(m.aim / MAX_AIM) * 130}%)`;
-  tiltBg.style.opacity = String(Math.min(1, Math.abs(m.steer / MAX_STEER) + Math.abs(m.aim / MAX_AIM) / 2));
+  // the tilt-pad indicator is rendered in tick() from the committed pose
+  // (currentControlAngles) so it can never diverge from the thrown aim
 }
 
 /**
@@ -201,47 +205,122 @@ const MAX_AIM = 0.45;   // radians of turn for full aim
 
 // ------------------------------ swing detection --------------------------
 // devicemotion-based state machine: idle -> swinging -> released.
+// CONTROLLER FEEL — explicit aim states:
+//   LIVE    phone held still in stance -> aim follows the phone on screen
+//   LOCKED  after a short dwell the pose is CAPTURED; the on-phone
+//           indicator, the transmitted aim, and the thrown aim are the same
+//           value. Lowering the phone to your side, carrying it, or
+//           mid-swing cannot change it. Re-opening aiming is ALWAYS an
+//   -> LIVE explicit action (the RE-AIM button, RECENTER, the mode toggle,
+//           or a fresh turn) — never motion itself, so a pick-up can never
+//           re-aim the ball.
+// Phone throws are always STRIGHT (spin 0): the ball goes exactly where
+// you aimed — gyro rotation during the carry or swing can never curve it.
 const SWING_ON = 4.5;    // m/s^2 linear acceleration deviation to start a swing
 const SWING_OFF = 2.5;   // ...to end it
-const MIN_SWING_MS = 90;
+const MIN_ACTIVE_MS = 120;   // sustained acceleration required for a real swing
+const SWING_MIN_PEAK = 6.0;  // weaker motions are pick-up jolts, not throws
 const COOLDOWN_MS = 700;
 const MAX_PEAK = 20;     // m/s^2 deviation mapped to power 1.0
+const AIM_STILL_DEV = 2.5; // hand must be this still for aim updates
+const AIM_LATCH_MS = 400;   // dwell before the aim locks for the throw
 
-let swinging = false, swingStart = 0, swingPeak = 0, spinAccum = 0;
+let lastDev = 0; // latest acceleration deviation (freshness for the stillness gate)
+let aimLocked = false;      // LOCKED state — aim captured, frozen
+let lockedAngles = null;    // the captured pose
+let lastLiveAngles = { steer: 0, aim: 0 }; // last live pose shown on screen
+let aimLiveSince = 0; // when the current live-aiming dwell began (0 = not aiming)
+
+function unlockAim() {
+  aimLocked = false;
+  lockedAngles = null;
+  aimLiveSince = 0;
+}
+
+/**
+ * The angles to steer/aim with — the SAME value a throw uses (throwAngles),
+ * so the screen can never diverge from the ball's line. LIVE while held still
+ * in stance; after a short dwell the pose is CAPTURED (LOCKED) and keeps
+ * being transmitted. Carrying the phone, picking it up, or mid-swing freeze
+ * it. Only an explicit action re-opens aiming: the RE-AIM button, RECENTER,
+ * the mode toggle, or a fresh turn — never motion itself.
+ */
+function currentControlAngles() {
+  const label = aimLocked ? 'AIM LOCKED' : 'TILT TO AIM';
+  if (tiltLabel.textContent !== label) tiltLabel.textContent = label;
+  if (swinging) { aimLiveSince = 0; return throwAngles(); } // mid-swing: frozen
+  const raw = mappedAngles();
+  const inRange = Math.abs(raw.steer) <= MAX_STEER * 1.25 && Math.abs(raw.aim) <= MAX_AIM * 1.25;
+  const still = lastDev < AIM_STILL_DEV;
+  if (!inRange || !still) { aimLiveSince = 0; return throwAngles(); } // carried / at side
+  // accepted pose: normalized ONCE — the indicator, the transmitted state and
+  // the throw all use this exact value
+  const m = normalizedPose(raw);
+  if (aimLocked && lockedAngles) return lockedAngles; // LOCKED: frozen
+  // still, in stance, not locked: LIVE aiming
+  if (!aimLiveSince) aimLiveSince = performance.now();
+  if (performance.now() - aimLiveSince >= AIM_LATCH_MS) {
+    lockedAngles = m; aimLocked = true; aimLiveSince = 0;
+    lastLiveAngles = m; // commit + transmit + throw the same pose
+    return lockedAngles;
+  }
+  lastLiveAngles = m;
+  return m;
+}
+
+/** Exactly what the screen shows — the throw can never diverge from the aim. */
+function throwAngles() {
+  return (aimLocked && lockedAngles) ? lockedAngles : lastLiveAngles;
+}
+
+/** Clamp a pose to the steer/aim limits — the ONE normalization point. */
+function normalizedPose(m) {
+  return { steer: clamp(m.steer, -MAX_STEER, MAX_STEER), aim: clamp(m.aim, -MAX_AIM, MAX_AIM) };
+}
+
+let swinging = false, swingStart = 0, swingPeak = 0;
+let swingActiveMs = 0; // how long the swing has actually been accelerating
 
 let lastMotionTs = 0;
 function onMotion(e) {
+  const acc = e.accelerationIncludingGravity;
+  if (!acc || acc.x == null) return;
+  const mag = Math.hypot(acc.x, acc.y, acc.z);
+  const dev = Math.abs(mag - 9.81);
+  lastDev = dev; // freshness for the aim stillness gate (always, even off-turn)
+
   // swing detection only runs while we're allowed to throw — a swing must
   // never accumulate while waiting and release the moment a turn starts
   if (!canThrow) {
     if (swinging) resetSwing();
     return;
   }
-  const acc = e.accelerationIncludingGravity;
-  const rot = e.rotationRate;
-  if (!acc || acc.x == null) return;
-  const mag = Math.hypot(acc.x, acc.y, acc.z);
-  const dev = Math.abs(mag - 9.81);
   const now = performance.now();
   const dt = lastMotionTs ? Math.min(0.1, (now - lastMotionTs) / 1000) : 0;
   lastMotionTs = now;
 
   if (swinging) {
     swingPeak = Math.max(swingPeak, dev);
-    if (rot && rot.alpha != null) spinAccum += (rot.alpha * DEG) * dt; // real dt
-    if (dev < SWING_OFF && now - swingStart > MIN_SWING_MS) {
-      // release
-      const power = clamp((swingPeak - SWING_ON) / (MAX_PEAK - SWING_ON), 0.15, 1);
-      const spin = clamp(spinAccum / 1.4, -1, 1);
-      latestPower = power; latestSpin = spin; // remembered for button mode
-      if (!buttonMode) sendThrow(power, spin);
+    const active = dev > SWING_OFF; // still accelerating — the swing itself
+    if (active) {
+      swingActiveMs += dt * 1000; // ms of sustained acceleration
+    } else {
+      // motion stopped. A real swing SUSTAINS acceleration for a while; a
+      // pick-up jolt is a brief spike — those are discarded, not thrown.
+      if (swingActiveMs >= MIN_ACTIVE_MS && swingPeak >= SWING_MIN_PEAK) {
+        const power = clamp((swingPeak - SWING_ON) / (MAX_PEAK - SWING_ON), 0.15, 1);
+        latestPower = power; // remembered for button mode
+        if (!buttonMode) sendThrow(power, 0); // straight ball — exactly the aimed line
+      }
       swinging = false;
-      swingPeak = 0; spinAccum = 0;
-      setTimeout(() => { swingHint.classList.remove('armed'); }, COOLDOWN_MS);
+      swingPeak = 0; swingActiveMs = 0;
+      swingHint.classList.remove('armed');
     }
   } else if (dev > SWING_ON && now - lastThrowAt > COOLDOWN_MS) {
+    // swing starting: if we were still live-aiming, lock the posed aim now
+    if (aimLiveSince) { lockedAngles = lastLiveAngles; aimLocked = true; }
     swinging = true;
-    swingStart = now; swingPeak = dev; spinAccum = 0;
+    swingStart = now; swingPeak = dev; swingActiveMs = 0;
     swingHint.classList.add('armed');
   }
 }
@@ -251,7 +330,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 function resetSwing() {
   swinging = false;
   swingPeak = 0;
-  spinAccum = 0;
+  swingActiveMs = 0;
   swingHint.classList.remove('armed');
 }
 
@@ -261,15 +340,53 @@ function sendThrow(power, spin) {
   // but this keeps the phone from showing "Thrown" for a rejected swing
   if (!client || !client.connected || !canThrow) return;
   lastThrowAt = performance.now();
-  // snapshot the release orientation together with power/spin so the host
-  // maps the throw atomically instead of racing the 30Hz tilt stream
-  const m = mappedAngles();
+  // exactly what the screen shows: the locked pose once the dwell latched,
+  // otherwise the live pose — never a mid-swing orientation. Picking the
+  // phone up from your side never wrecks the aim.
+  const m = throwAngles();
   client.sendCtl({
     t: 'throw', id: Math.random().toString(36).slice(2), power, spin,
     steer: m.steer, aim: m.aim,
   });
   setStatus('ok', 'Thrown');
   setTimeout(() => setStatus('ok', 'Connected'), 900);
+}
+
+// --------------------- mirrored on-screen buttons --------------------------
+// The game mirrors its visible buttons here; tapping sends the press back
+// (with the snapshot revision, so stale taps are rejected by the host).
+// `values` shows the current selector values (games/bowlers) so the player
+// can see what the − / + buttons are changing.
+let uiRev = 0;
+function renderGameButtons(buttons, values, rev) {
+  if (Number.isFinite(rev)) uiRev = rev;
+  gameButtons.innerHTML = '';
+  gameButtons.classList.toggle('hidden', buttons.length === 0);
+  // a full menu on the phone: collapse the tilt pad so everything fits
+  tiltStage.classList.toggle('hidden', buttons.length > 2);
+  const names = { games: 'GAMES', soloGames: 'GAMES', bowlers: 'BOWLERS' };
+  const valEntries = Object.entries(values || {})
+    .filter(([k]) => k in names)
+    .map(([k, v]) => `${names[k]} ${v}`);
+  if (valEntries.length) {
+    const line = document.createElement('p');
+    line.className = 'gb-values';
+    line.textContent = valEntries.join(' · ');
+    gameButtons.appendChild(line);
+  }
+  for (const b of buttons) {
+    const btn = document.createElement('button');
+    btn.className = 'phone-btn small gb-btn';
+    btn.type = 'button';
+    btn.textContent = b.label || 'BUTTON';
+    btn.addEventListener('click', () => {
+      if (client && client.connected) {
+        client.sendCtl({ t: 'uiclick', key: b.key, rev: uiRev });
+        if (navigator.vibrate) navigator.vibrate(12);
+      }
+    });
+    gameButtons.appendChild(btn);
+  }
 }
 
 // ------------------------------ settings ---------------------------------
@@ -324,21 +441,30 @@ function refreshSettingsUI() {
 let buttonMode = false;  // false = swing throw (default), true = button throw
 let canThrow = false;    // mirrored from the game via phase messages
 let waitText = null;      // why we're waiting (from the game), or null
-let latestPower = 0.62, latestSpin = 0;
+let latestPower = 0.62;  // remembered from the last real swing (button mode)
 
 modeBtn.addEventListener('click', () => {
   buttonMode = !buttonMode;
   modeBtn.textContent = buttonMode ? 'MODE: BUTTON' : 'MODE: SWING';
   throwBtn.classList.toggle('hidden', !buttonMode);
+  unlockAim();
   updateThrowUI();
 });
 
-calBtn.addEventListener('click', calibrate);
+calBtn.addEventListener('click', () => {
+  calibrate();
+  unlockAim(); // the neutral changed — re-aim from scratch
+});
+
+reaimBtn.addEventListener('click', () => {
+  unlockAim(); // explicit re-aim: back to live aiming
+  if (navigator.vibrate) navigator.vibrate(10);
+});
 
 throwBtn.addEventListener('click', () => {
   const power = swinging ? clamp((swingPeak - SWING_ON) / (MAX_PEAK - SWING_ON), 0.15, 1)
                          : (latestPower > 0 ? latestPower : 0.62);
-  sendThrow(power, latestSpin);
+  sendThrow(power, 0); // straight ball — exactly the aimed line
 });
 
 function updateThrowUI() {
@@ -355,9 +481,13 @@ let lastSent = 0;
 let seq = 0; // monotonic sample counter for stale-sample dropping
 function tick() {
   const now = performance.now();
+  // the committed pose: LIVE while aiming, LOCKED once the dwell latches —
+  // the on-phone indicator, the transmitted state, and the throw all use it
+  const m = currentControlAngles();
+  tilt.style.transform = `translate(${(m.steer / MAX_STEER) * 130}%, ${(m.aim / MAX_AIM) * 130}%)`;
+  tiltBg.style.opacity = String(Math.min(1, Math.abs(m.steer / MAX_STEER) + Math.abs(m.aim / MAX_AIM) / 2));
   if (client && client.connected && now - lastSent >= 33) {
     lastSent = now;
-    const m = mappedAngles();
     client.sendState(++seq, clamp(m.steer, -MAX_STEER, MAX_STEER), clamp(m.aim, -MAX_AIM, MAX_AIM));
   }
   calTick();

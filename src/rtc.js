@@ -86,13 +86,16 @@ function waitIce(pc, timeoutMs = ICE_GATHER_TIMEOUT_MS) {
  * onThrow(slot, { power, spin, id }) — release event (id for dedup)
  * onStatus(slot, 'waiting'|'connected'|'disconnected'|'error', detail)
  * onLatency(slot, ms)                 — round-trip over the ctl channel
+ * onUiClick(slot, key)                — the phone pressed a mirrored on-screen
+ *                                        button (key from the 'ui' list)
  */
 export class PhoneHost {
-  constructor({ onState, onThrow, onStatus, onLatency } = {}) {
+  constructor({ onState, onThrow, onStatus, onLatency, onUiClick } = {}) {
     this.onState = onState || (() => {});
     this.onThrow = onThrow || (() => {});
     this.onStatus = onStatus || (() => {});
     this.onLatency = onLatency || (() => {});
+    this.onUiClick = onUiClick || (() => {});
     this.sessions = []; // [{ slot, pc, stateCh, ctlCh, docId, code, unsub,
                          //   seenThrows, lastSeq, pingTimer, connected }]
   }
@@ -229,6 +232,9 @@ export class PhoneHost {
           break;
         case 'pong':
           if (m.ts) this.onLatency(s.slot, Math.max(0, Date.now() - m.ts));
+          break;
+        case 'uiclick':
+          if (m.key) this.onUiClick(s.slot, m.key, m.rev);
           break;
       }
     });

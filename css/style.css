@@ -35,7 +35,9 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html, body { height: 100%; overflow: hidden; }
+html, body { height: 100%; }
+body { overflow: hidden; } /* the game page: fixed viewport */
+body.phone-body { overflow-y: auto; } /* the controller page: scrolls if needed */
 
 body {
   font-family: var(--font-body);
@@ -583,7 +585,6 @@ kbd {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  justify-content: center;
   padding: env(safe-area-inset-top) 18px env(safe-area-inset-bottom);
   box-sizing: border-box;
 }
@@ -594,6 +595,7 @@ kbd {
   align-items: center;
   gap: 14px;
   text-align: center;
+  margin-block: auto; /* centers when it fits, scrolls instead of clipping */
 }
 .phone-screen.active { display: flex; }
 
@@ -676,6 +678,27 @@ kbd {
 }
 .slot-badge.hidden { display: none; }
 
+/* mirrored game buttons on the phone (menus, game over, in-game controls) */
+.game-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  align-items: center;
+  max-height: 34vh; /* long menus scroll instead of pushing off-screen */
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+.game-buttons.hidden { display: none; }
+.game-buttons .gb-btn { min-width: 230px; flex: none; }
+.gb-values {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: #9fc3d8;
+}
+
+.tilt-stage.hidden { display: none; }
 .tilt-stage {
   position: relative;
   width: min(78vw, 300px);
@@ -718,6 +741,7 @@ kbd {
 
 .phone-bottom {
   display: flex; gap: 12px; margin-top: 6px;
+  flex-wrap: wrap; justify-content: center;
 }
 
 /* desktop menu: phone pairing bits */
@@ -735,6 +759,30 @@ kbd {
 .menu-btn.phone-accent {
   background: linear-gradient(180deg, #4cc9f0, #4aa8d8);
   box-shadow: 0 6px 18px rgba(76, 201, 240, 0.3);
+}
+
+/* games-per-session steppers ("lanes": how many times you play) */
+#games-row, #solo-games-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+}
+#games-value, #solo-games-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #ffdf7e;
+  min-width: 44px;
+  text-align: center;
+}
+
+/* series standings title (games 1..N) */
+.fs-series-title {
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: #9fc3d8;
+  margin-bottom: 6px;
+  text-align: center;
 }
 
 #phone-pair-row { display: flex; gap: 18px; justify-content: center; }

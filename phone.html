@@ -39,19 +39,23 @@
       <span id="latency" class="lat"></span>
     </header>
 
-    <div class="tilt-stage">
+    <div class="tilt-stage" id="tilt-stage">
       <div class="tilt-bg" id="tilt-fill"></div>
       <div class="tilt-ring"></div>
       <div class="tilt-dot" id="tilt-indicator"></div>
-      <span class="tilt-label">TILT TO AIM</span>
+      <span class="tilt-label" id="tilt-label">TILT TO AIM</span>
     </div>
 
     <p id="swing-hint" class="swing-hint">Aim with tilt — SWING to throw</p>
 
     <button id="throw-btn" class="phone-btn throw hidden">THROW</button>
 
+    <!-- on-screen buttons mirrored from the game (menus, game over, etc.) -->
+    <div id="game-buttons" class="game-buttons hidden"></div>
+
     <footer class="phone-bottom">
       <button id="cal-btn" class="phone-btn small">RECENTER</button>
+      <button id="reaim-btn" class="phone-btn small">RE-AIM</button>
       <button id="mode-btn" class="phone-btn small">MODE: SWING</button>
       <button id="setup-btn" class="phone-btn small">SETUP</button>
     </footer>

@@ -58,6 +58,11 @@ async function boot() {
   let prevRoomStatus = null;   // lobby -> playing overlay fix
   let revisionAtThrow = -1;    // pending-result lock
 
+  // games per session (the "lanes" selector — how many times you play)
+  let soloGames = 1;
+  let localGames = 1;
+  let series = null;           // { total, done, scores: { name: [per-game totals] } }
+
   // if our online submission fails, release the pending-result lock so the
   // player isn't frozen until the turn timeout
   game.onNetSubmitFailed = () => {
@@ -66,6 +71,74 @@ async function boot() {
     revisionAtThrow = -1;
     lastAppliedRevision = -1; // onlineTick will re-adopt the authoritative rack
   };
+
+  // ---- series (games per session) bookkeeping ----
+  // ui.showGameOver / showMatchOver fire exactly once per finished game, so
+  // wrapping them records each game's scores into the series.
+  const _showGameOver = ui.showGameOver.bind(ui);
+  ui.showGameOver = (total) => {
+    _showGameOver(total);
+    if (series && !net) {
+      recordSeriesScore([{ uid: 'you', name: 'You', total }]);
+      refreshSeriesHud();
+    }
+  };
+  const _showMatchOver = ui.showMatchOver.bind(ui);
+  ui.showMatchOver = (standings) => {
+    _showMatchOver(standings);
+    if (series && !net && match) {
+      // per-player totals straight from their own games (names can repeat)
+      const entries = match.players.map((p) => ({
+        uid: p.uid, name: p.name, total: p.game.totalScore() ?? 0,
+      }));
+      recordSeriesScore(entries);
+      refreshSeriesHud();
+    }
+  };
+
+  function recordSeriesScore(entries) {
+    if (!series || series.done >= series.total) return; // series already complete
+    series.done = (series.done || 0) + 1;
+    for (const e of entries) {
+      const rec = series.scores[e.uid] = series.scores[e.uid] || { name: e.name, totals: [] };
+      rec.name = e.name;
+      rec.totals.push(e.total);
+    }
+  }
+
+  /** Series standings in the final panel + NEXT GAME / NEW SERIES button. */
+  function refreshSeriesHud() {
+    if (!series) return;
+    const remaining = series.total - series.done;
+    const names = Object.values(series.scores);
+    if (names.length) {
+      const el = ui.el.finalStandings;
+      el.innerHTML = '';
+      const h = document.createElement('div');
+      h.className = 'fs-series-title';
+      h.textContent = remaining > 0
+        ? `SERIES — GAME ${series.done} OF ${series.total} DONE`
+        : 'SERIES FINAL';
+      el.appendChild(h);
+      const rows = names
+        .map((r) => ({ name: r.name, total: r.totals.reduce((a, b) => a + b, 0) }))
+        .sort((a, b) => b.total - a.total);
+      rows.forEach((r, i) => {
+        const d = document.createElement('div');
+        d.className = 'fs-row' + (i === 0 ? ' winner' : '');
+        const name = document.createElement('span');
+        name.textContent = r.name + (i === 0 ? ' 🏆' : '');
+        const total = document.createElement('span');
+        total.textContent = r.total;
+        d.append(name, total);
+        el.appendChild(d);
+      });
+      el.classList.remove('hidden');
+    }
+    ui.el.playAgain.textContent = remaining > 0
+      ? `NEXT GAME (${series.done + 1}/${series.total})`
+      : 'NEW SERIES';
+  }
 
   // phone controllers (gyro Wii-style) — up to 4 slots, one phone each
   let phoneHub = null;
@@ -153,7 +226,12 @@ async function boot() {
     clearPhoneTurnState(); // fresh match: no stale re-arm locks or phase keys
   }
 
-  function startSolo() {
+  function freshSeries(total) {
+    series = { total: Math.max(1, total), done: 0, scores: {} };
+  }
+
+  function startSolo(keepSeries = false) {
+    if (!keepSeries || !series) freshSeries(soloGames);
     match = null; game.match = null; game.net = null;
     resetHudForMatchStart();
     ui.updateMatchPanel(null);
@@ -161,8 +239,9 @@ async function boot() {
     game.start();
   }
 
-  function startLocal(names) {
+  function startLocal(names, keepSeries = false) {
     localNames = names.slice();
+    if (!keepSeries || !series) freshSeries(localGames);
     match = new Match(names);
     resetHudForMatchStart();
     input.setEnabled(true);
@@ -349,13 +428,13 @@ async function boot() {
    */
   function slotControlsActivePlayer(slot) {
     if (!match) return true;
-    const live = phoneHub ? phoneHub.connectedSlots().length : 0;
-    if (slot < match.players.length && match.activeIdx < live) {
-      return slot === match.activeIdx; // dedicated slot, dedicated bowler
+    const live = phoneHub ? phoneHub.connectedSlots() : [];
+    // dedicated only when the active bowler's own slot is actually connected
+    if (slot < match.players.length && live.includes(match.activeIdx)) {
+      return slot === match.activeIdx;
     }
     return true; // shared / pass-the-phone / beyond-roster
   }
-
   /** Online: is it the local player's turn in the room? */
   function onlineMyTurn() {
     if (!net || !currentRoom || currentRoom.status !== 'playing') return !net; // no room: not blocking
@@ -585,6 +664,7 @@ async function boot() {
     const hub = new PhoneHost({
       onState: onPhoneState,
       onThrow: onPhoneThrow,
+      onUiClick: (slot, key, rev) => onPhoneUiClick(key, rev),
       onStatus: (slot, kind, detail) => {
         if (phoneHub !== hub) return; // stale hub (closed/replaced) — ignore
         if (kind === 'waiting') {
@@ -595,6 +675,8 @@ async function boot() {
           ui.el.phoneDone.classList.remove('hidden');
           phonePhaseKeys.delete(slot); // resend the current phase to this phone
           broadcastPhonePhase();
+          lastUiKeys = ''; // mirror the current on-screen buttons to it
+          syncPhoneUi();
           // auto-advance: pair the next slot with no session at all
           if (n < phoneCount) {
             const next = nextEmptyPhoneSlot();
@@ -610,6 +692,106 @@ async function boot() {
       onLatency: (slot, ms) => { /* status line above; keep for future HUD */ void slot; void ms; },
     });
     phoneHub = hub;
+  }
+
+  // ---------------- phone UI mirroring ----------------
+  // Every on-screen button that pops up (menus, lobby, game over, in-game
+  // mute/restart) is mirrored to the connected phones, so the player never
+  // has to reach for the mouse.
+
+  let phoneUiButtons = [];   // [{ key, label, el }] — last scan
+  let lastUiKeys = '';
+  let lastUiSyncAt = 0;
+  let uiRev = 0;             // snapshot revision — stale phone taps are rejected
+
+  /**
+   * Visible on-screen buttons the phone should be able to press, plus the
+   * selector values relevant to whatever menu is up. Keys are stable and
+   * semantic (id, or data-count / data-phones, or screen-scoped index).
+   */
+  function scanPhoneUi() {
+    const out = [];
+    const values = {};
+    const overlayShown = ui.el.overlay.classList.contains('show');
+    if (overlayShown) {
+      const visible = (scr) => scr && !scr.classList.contains('hidden');
+      if (visible(ui.el.menuMain)) values.soloGames = soloGames;
+      if (visible(ui.el.menuLocal)) { values.games = localGames; values.bowlers = localCount; }
+      const screens = [
+        [ui.el.menuMain, 'menu-main'],
+        [ui.el.menuLocal, 'menu-local'],
+        [ui.el.menuOnline, 'menu-online'],
+        [ui.el.menuLobby, 'menu-lobby'],
+        [ui.el.menuPhone, 'menu-phone'],
+        [ui.el.finalPanel, 'final-panel'],
+      ];
+      for (const [scr, scrId] of screens) {
+        if (!scr || scr.classList.contains('hidden')) continue;
+        let idx = 0;
+        scr.querySelectorAll('button').forEach((b) => {
+          if (b.offsetParent === null) return; // not actually visible
+          if (b.disabled) return;
+          const key = b.id
+            || (b.dataset.count != null ? `bowlers-${b.dataset.count}` : null)
+            || (b.dataset.phones != null ? `phones-${b.dataset.phones}` : null)
+            || `${scrId}-btn-${idx++}`;
+          out.push({ key, label: (b.textContent || '').trim().slice(0, 24), el: b });
+        });
+      }
+    } else {
+      // in-game: the top-bar buttons
+      out.push({ key: 'mute-btn', label: 'SOUND', el: ui.el.muteBtn });
+      out.push({ key: 'restart-btn', label: 'RESTART', el: ui.el.restartBtn });
+    }
+    return { buttons: out, values };
+  }
+
+  function syncPhoneUi() {
+    if (!phoneHub || !phoneHub.connected) return;
+    const scan = scanPhoneUi();
+    if (uiSignature(scan) === lastUiKeys) return;
+    pushPhoneUi(scan);
+  }
+
+  function uiSignature(scan) {
+    // includes labels and selector values so any change re-syncs
+    return scan.buttons.map((b) => b.key + ':' + b.label).join('|')
+      + '#' + JSON.stringify(scan.values);
+  }
+
+  function pushPhoneUi(scan) {
+    phoneUiButtons = scan.buttons;
+    lastUiKeys = uiSignature(scan);
+    uiRev++;
+    phoneHub.sendCtl({
+      t: 'ui',
+      rev: uiRev,
+      buttons: scan.buttons.map((b) => ({ key: b.key, label: b.label })),
+      values: scan.values,
+    });
+  }
+
+  /**
+   * A phone pressed a mirrored button — click the real one. The screen is
+   * re-scanned FIRST: if it changed since the last sync the tap is already
+   * stale (its revision no longer matches), so it is rejected and the fresh
+   * snapshot is pushed instead. Taps must match the current revision
+   * exactly, and the target must still be visible.
+   */
+  function onPhoneUiClick(key, rev) {
+    if (!phoneHub || !phoneHub.connected) return;
+    const scan = scanPhoneUi();
+    if (uiSignature(scan) !== lastUiKeys) {
+      pushPhoneUi(scan); // the screen moved on — this tap is stale
+      return;
+    }
+    if (rev !== uiRev) return; // exact-revision match required
+    const b = scan.buttons.find((x) => x.key === key);
+    if (b && b.el && !b.el.disabled && b.el.offsetParent !== null) {
+      b.el.click();
+      lastUiKeys = ''; // the screen may have changed — resync now
+      syncPhoneUi();
+    }
   }
 
   // ---------------- main loop ----------------
@@ -656,6 +838,10 @@ async function boot() {
     updateCamera(delta);
     updateAimGuide();
     render();
+    if (now - lastUiSyncAt > 400) { // keep the phone's button mirror fresh
+      lastUiSyncAt = now;
+      syncPhoneUi();
+    }
     const metersPhase = game.phase === 'ready' && input.enabled ? 'ready' : game.phase;
     ui.updateMeters(input.controls, input.charging, metersPhase);
     ui.setDebug(`FPS:${_fps.toFixed(0)} ${_ft.toFixed(1)}ms\n${game.phase} f${game.frameIndex + 1} r${game.rollIndex + 1}`);
@@ -684,6 +870,20 @@ async function boot() {
   ui.el.menuMain.querySelector('#btn-phone').addEventListener('click', () => {
     audio.init(); audio.click(); startPhonePairing();
   });
+  // games per session ("lanes": how many times you play) — 1..32
+  function setSoloGames(n) {
+    soloGames = Math.max(1, Math.min(32, n));
+    ui.el.soloGamesValue.textContent = String(soloGames);
+  }
+  ui.el.soloGamesMinus.addEventListener('click', () => { audio.click(); setSoloGames(soloGames - 1); });
+  ui.el.soloGamesPlus.addEventListener('click', () => { audio.click(); setSoloGames(soloGames + 1); });
+  function setLocalGames(n) {
+    localGames = Math.max(1, Math.min(32, n));
+    ui.el.gamesValue.textContent = String(localGames);
+  }
+  ui.el.gamesMinus.addEventListener('click', () => { audio.click(); setLocalGames(localGames - 1); });
+  ui.el.gamesPlus.addEventListener('click', () => { audio.click(); setLocalGames(localGames + 1); });
+
   // how many phones? 1-4 (data-phones on the buttons)
   function selectPhoneCount(n) {
     ui.el.menuPhone.querySelectorAll('#phone-count-row .count-btn').forEach((b) => {
@@ -740,12 +940,12 @@ async function boot() {
   });
 
   function selectCount(n) {
-    ui.el.menuLocal.querySelectorAll('.count-btn').forEach((b) => {
+    ui.el.menuLocal.querySelectorAll('#local-count-row .count-btn').forEach((b) => {
       b.classList.toggle('selected', Number(b.dataset.count) === n);
     });
   }
   let localCount = 2;
-  ui.el.menuLocal.querySelectorAll('.count-btn').forEach((b) => {
+  ui.el.menuLocal.querySelectorAll('#local-count-row .count-btn').forEach((b) => {
     b.addEventListener('click', () => {
       audio.click();
       localCount = Number(b.dataset.count);
@@ -761,6 +961,7 @@ async function boot() {
     });
     while (names.length < localCount) names.push('Bowler ' + (names.length + 1));
     startLocal(names);
+    if (localGames > 1) ui.message(`Game 1 of ${localGames}`, 'info', 2200);
   });
   ui.el.menuLocal.querySelector('#btn-local-back').addEventListener('click', () => {
     audio.click(); ui.showMenu('main');
@@ -799,11 +1000,9 @@ async function boot() {
       if (net && currentRoom) {
         net.leaveRoom().then(() => { net = null; backToMenu(); });
       } else if (match) {
-        startLocal(localNames);
+        startLocal(localNames, true);
       } else {
-        ui.hideOverlay();
-        clearPhoneTurnState();
-        game.start();
+        startSolo(true);
       }
     }
     if (e.code === 'KeyM' && !e.repeat) {
@@ -826,11 +1025,9 @@ async function boot() {
     if (net && currentRoom) {
       net.leaveRoom().then(() => { net = null; backToMenu(); });
     } else if (match) {
-      startLocal(localNames);
+      startLocal(localNames, true);
     } else {
-      ui.hideOverlay();
-      clearPhoneTurnState();
-      game.start();
+      startSolo(true);
     }
   });
   ui.el.playAgain.addEventListener('click', () => {
@@ -842,8 +1039,14 @@ async function boot() {
       return; // non-hosts wait for the host
     }
     ui.hideOverlay();
-    if (match) startLocal(localNames);
-    else { clearPhoneTurnState(); game.start(); }
+    // series flow: next game keeps the running totals; after the last game
+    // PLAY AGAIN starts a fresh series with the same settings
+    const seriesDone = series && series.done >= series.total;
+    if (match) startLocal(localNames, !seriesDone);
+    else startSolo(!seriesDone);
+    if (series && series.done < series.total) {
+      ui.message(`Game ${series.done + 1} of ${series.total}`, 'info', 2200);
+    }
   });
 
   // ---- testing / automation hooks ----
@@ -908,8 +1111,8 @@ async function boot() {
     restart() {
       if (net && currentRoom) return;
       ui.hideOverlay();
-      if (match) startLocal(localNames);
-      else { clearPhoneTurnState(); game.start(); }
+      if (match) startLocal(localNames, true);
+      else startSolo(true);
     },
     state() { return JSON.parse(window.render_game_to_text()); },
   };

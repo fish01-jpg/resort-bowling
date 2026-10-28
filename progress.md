@@ -258,3 +258,38 @@ Changes (NOT runtime-tested per user's instruction — user will test):
 - Pairing flow: the phone menu now has a "How many phones?" selector (1-4, default 1). Pairing fills the first empty slot and auto-advances: once phone 1 connects, a fresh QR/code is generated for phone 2, and so on. Per-slot chips (P1..P4) show status; tapping a disconnected chip re-pairs that slot. Disconnect closes all slots; Back only kicks phones that never connected.
 - phone.html/phone-main.js: slot badge (P1, P2/4 …) in the controller header + waitText display.
 - css/style.css: slot-chip, slot-badge, phone-count-row styles.
+
+## Controller feel + phone-driven menus + games-per-session (2026-10-27, round 4)
+
+User requests: (1) swing mode should feel like a real controller — putting the phone down at your side and picking it up to swing kept throwing the ball off the aimed line; (2) every button that pops up on the big screen should be pressable from the phone; (3) a 1-32 selector for "lanes" = how many times you play (full games per session).
+
+Changes (NOT runtime-tested per user's instruction — user will test):
+- phone-main.js controller feel: aim/steer now only update while the phone is held STILL in the calibrated stance (acceleration-deviation stillness gate + in-range check). Carrying the phone, picking it up, or mid-swing FREEZES the last good aim — the throw packet and the 30Hz stream both use the frozen values, so the ball always goes where you aimed. Swing detection now requires ~120ms of sustained acceleration and a minimum peak; brief pick-up jolts are discarded instead of thrown. Spin only accumulates while the swing is actually accelerating.
+- Phone UI mirroring: the game scans its visible buttons (overlay menus, final panel, in-game mute/restart) every 400ms and mirrors them to all connected phones; tapping a mirrored button clicks the real one (validated still-visible) and resyncs. Selector values (games/bowlers) are included so the phone shows what − / + changes. rtc.js gained onUiClick plumbing; phone shows the buttons in a scrollable panel.
+- Games per session: stepper on the main menu (solo) and in LOCAL MULTIPLAYER (1-32). Series standings accumulate across games (keyed by player uid); after each game the button reads NEXT GAME (x/N); after the last game it reads NEW SERIES and shows SERIES FINAL totals. R/restart mid-series keeps the running totals; scores are not recorded past the configured limit.
+- Fixed: the games stepper buttons shared the .count-btn class with the bowler-count row and would have wiped the roster (listener now scoped to #local-count-row). Phone-slot dedication now checks actual slot membership (a gap like only-slot-2-connected no longer locks every phone out).
+
+Interpretation note: "lanes" was implemented as full games per session (how many times you play). If the user meant individual throws/turns instead, the series layer needs re-scoping.
+
+Round-4 review fixes (same session, before commit):
+- Fixed a units bug in the new swing gating: dt is seconds, so swingActiveMs was accumulated in seconds but compared to a 120 MILLISECOND threshold — every real swing would have been discarded. Now accumulates dt*1000.
+- Aim latch is now deterministic for the throw: while held still in stance the aim is live for visual feedback; after a 400ms dwell it latches; a swing that starts while live latches the aimed pose at that instant; the throw packet always uses the latched value. lastDev updates even off-turn.
+- Series entries now come from each player's own game object (duplicate names can't merge); phone button mirror uses stable semantic keys (id / data-count / data-phones / screen-scoped), a snapshot revision (rev) rejects stale taps after screen transitions, selector values are sent per-screen and included in the change signature, and the phone collapses the tilt pad when a full menu is mirrored so everything fits.
+
+Round-5 review fixes (same session, before commit):
+- Aim is now a real state machine (LIVE -> LOCKED): holding still in stance aims live; after the dwell the pose is captured and frozen — displayed aim and the thrown aim are the same value by construction (throwAngles), in both swing and button mode. Lowering the phone to your side, carrying it, or mid-swing can't touch it; only a deliberate re-aim (holding a clearly different stance still) or RECENTER/mode change re-opens aiming. A swing that starts while still aiming locks the posed aim at that instant.
+- Spin no longer comes from total rotation over the whole carry (picking the phone up from your side used to become unintended hook) — it now comes from the rotation rate at the strongest instant of the swing (the release flick).
+- Phone taps on mirrored buttons: the host re-scans the screen before honoring a tap; if the screen changed since the last sync the tap is rejected as stale (and the fresh snapshot is pushed); an exact revision match is required.
+- The phone controller page itself now scrolls (body.phone-body overflow-y auto, safe centering), so any mirrored menu fits on any phone.
+
+Round-6 review fixes (same session, before commit):
+- Fixed a fatal regression from round 5: currentControlAngles() returned null when frozen, which crashed the 30Hz tick loop on the first locked sample (sendState dereferenced it). It now ALWAYS returns the committed pose — frozen paths return throwAngles()/lockedAngles, so the displayed, transmitted, and thrown aim are one value by construction.
+- Re-aiming is now exclusively explicit: a RE-AIM footer button (plus RECENTER, the mode toggle, and each fresh turn) re-opens live aiming; motion can never unlock it. The tilt pad label shows AIM LOCKED vs TILT TO AIM. Sensor-based unlock thresholds were removed.
+- Spin is captured at the release flick (the final active motion sample) instead of the strongest sample, so pickup acceleration/rotation can no longer become power or hook.
+
+Round-7 review fixes (same session, before commit):
+- Phone throws are now always STRAIGHT (spin 0) in both swing and button mode: gyro rotation during the carry or swing can never curve the ball, so it goes exactly where the aimed line points. The release-flick spin sampling was removed entirely.
+- The on-phone tilt-pad indicator is now rendered in tick() from the SAME committed pose that is transmitted and thrown (currentControlAngles), instead of raw live orientation in onOrient — carrying the phone no longer moves the indicator while the actual aim stays frozen.
+- Correction to the round-6 note: pickup motion still contributes to swingPeak (power), since a pickup and its swing are one continuous motion — that is accepted behavior; only the aim and the ball's curve are fully protected from the carry.
+
+Round-7 final: user confirmed the 1-32 "lanes" selector counts COMPLETE GAMES (asked directly, per review). Also: accepted poses are normalized once (clamped to the steer/aim limits) at capture — the on-phone indicator, the transmitted state, and the throw all use that exact value; the host applies identical scaling to both state and throw paths (verified in onPhoneState/onPhoneThrow).
