@@ -8,7 +8,7 @@ import { AudioFX } from './audio.js';
 import { BowlingGame } from './game.js';
 import { Match, playerProgress, buildGames } from './match.js';
 import { RoomClient, TURN_TIMEOUT_MS } from './net.js';
-import { PhoneHost } from './rtc.js';
+import { PhoneHost } from './rtc.js?v=2';
 import { LANE, TUNING } from './constants.js';
 
 // Phones become controllers, not the game screen: redirect small touch

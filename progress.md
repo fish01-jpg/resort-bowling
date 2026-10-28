@@ -516,3 +516,22 @@ Round 11 fixes (review pass — waiter sharing + takeover semantics + tests):
   watchdog deadline, shared-waiter renewal, stale channel-close events,
   renegotiation timeout/error reporting, and stale-claim takeover
   semantics. Still NO live testing (per the project rules).
+
+Round 12: "phone module doesn't appear to be updated" (post-merge report)
+
+The phone was almost certainly running the OLD cached phone-main.js: GitHub
+Pages serves static files with a ~10-minute cache, and the site was tested
+right after merging (that old code is exactly the permanent AIM LOCKED /
+controls-locked behavior). Fixes:
+
+- CACHE BUSTING: every entry reference now carries a version tag
+  (?v=2 on phone.html + index.html script/css refs, and on the
+  phone-main/main imports of rtc.js + orientation.js). The next release
+  bumps the number in those spots (html refs + imports of CHANGED files
+  only — bumping an import of an unchanged file that other modules also
+  import plainly would load it twice).
+- VISIBLE VERSION: the phone shows a small "v2" badge (bottom-right) so
+  it is instantly verifiable which version is actually running.
+- HONEST LABEL: while the game has the phone paused (not its turn, ball
+  in play, re-arming), the big label now reads WAITING instead of a stale
+  AIM LOCKED — the reason shows in the hint line under it.

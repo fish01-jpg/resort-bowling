@@ -100,3 +100,12 @@ For a public Pages deployment, lock it down in the Firebase console with
 scoped rules, e.g. allow read/write on `/bowlingRooms/{code}` only while
 documents keep a valid shape (players array, rolls map, turn object), and
 consider requiring anonymous auth.
+
+## Deploying updates
+
+GitHub Pages caches static files for ~10 minutes, so phones that loaded
+the site just before a deploy keep running the old code. Every entry
+reference carries a `?v=N` tag (in `phone.html` / `index.html` and the
+`rtc.js`/`orientation.js` imports) — bump `N` in those spots when you
+change a module, and check the version badge on the phone (bottom-right)
+to confirm which version it is running.

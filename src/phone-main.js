@@ -7,11 +7,11 @@ import {
   deleteDoc, serverTimestamp, updateDoc,
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
-import { PhoneClient } from './rtc.js';
+import { PhoneClient } from './rtc.js?v=2';
 import {
   quatFromEuler, quatConj, quatMul, relativeRotation, extractAngles,
   applyControlScheme,
-} from './orientation.js';
+} from './orientation.js?v=2';
 
 const FIREBASE_CONFIG = {
   apiKey: 'AIzaSyBDYH16UPlCBIarBorBAMiyc7Mbn6_v9cw',
@@ -342,7 +342,12 @@ function currentControlAngles() {
     if (tiltLabel.textContent !== 'DRAG TO AIM') tiltLabel.textContent = 'DRAG TO AIM';
     return m;
   }
-  const label = aimLocked ? 'AIM LOCKED' : 'TILT TO AIM';
+  // when the game has this phone paused (not its turn / ball in play /
+  // re-arming), the big label must SAY so — a stale "AIM LOCKED" there is
+  // what made the controls look permanently locked
+  const label = !canThrow
+    ? 'WAITING'
+    : aimLocked ? 'AIM LOCKED' : 'TILT TO AIM';
   if (tiltLabel.textContent !== label) tiltLabel.textContent = label;
   if (swinging) { aimLiveSince = 0; dwellPose = null; relatchSince = 0; relatchPose = null; return throwAngles(); } // mid-swing: frozen
   const raw = angles; // RAW extracted pose — the stance gate (pre-scheme)
