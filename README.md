@@ -68,6 +68,15 @@ is served at `phone.html`; small touch devices are redirected there
 automatically (`?desktop=1` overrides). Pairing uses Firestore only for
 WebRTC signaling — all controller traffic runs over a peer data channel.
 
+Control schemes (SETUP on the phone): **WHEEL**, **TWIST**, **SWING**
+(default), **FLICK** (gentler release), and **TOUCH PAD** (drag to aim — no
+gyroscope needed). Default sensitivity is LOW. Pairing is more forgiving: a
+TURN relay fallback is in the ICE servers for strict networks (school Wi-Fi,
+hotspots — best-effort public relay), the whole connect attempt is bounded
+and fails with a retry prompt instead of hanging, and the phone keeps a
+stable per-device id while the host renegotiates automatically — reloading
+or reconnecting with the same QR/code reconnects instead of getting stuck.
+
 ## Roadmap
 
 - Touch controls, gamepad support, motion (device-orientation) controls

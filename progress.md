@@ -395,3 +395,67 @@ Round 8 fixes (review pass 3):
   event — never only on the 400ms watchdog. Missing samples read as zero
   spin; a valid zero sample cannot revive the old snapshot (releaseTwist is
   only reassigned from live samples while a swing is active).
+
+Round 9 fixes (phone connection + setup screen + modes):
+
+- Phone connection reliability: a public TURN relay + extra STUN servers
+  are in the ICE config (STUN-only pairing fails on symmetric-NAT networks
+  — hotspot/school Wi-Fi); the phone has a 20s connect watchdog that fails
+  with a retry prompt instead of hanging on the loading screen; pairing
+  errors/progress now show ON THE PAIRING SCREEN (the status header lives on
+  the controller screen, which isn't visible before the channel opens); the
+  phone's controller id is persisted in localStorage so a reload or
+  reconnect with the same QR is accepted instead of "another controller
+  already claimed this session"; a stale never-paired claim (crashed
+  phone) can be taken over after 90s; ICE 'failed' is watched at both the
+  connection and ICE level (some mobile browsers don't fire
+  connectionstatechange reliably).
+- Setup screen: show() now hides EVERY screen — the settings screen was
+  missing from the hide list, so SETUP elements stayed stacked over the
+  controls after leaving the menu (also made buttons unresponsive, the
+  "controls locked" glitch).
+- Controls no longer stick: the hard accelerometer-stillness gate is gone
+  (noisy sensors made the aim lock permanently — controls felt dead most
+  of the time); holding a NEW in-stance pose for ~0.5s re-opens live
+  aiming automatically; the in-range gate still rejects carrying the
+  phone.
+- Defaults: SWING scheme + LOW sensitivity (0.6) — older saved settings
+  are reset once to the new defaults (v2 marker in localStorage).
+- New modes: FLICK (same as swing but a much gentler release — helps
+  devices whose accelerometers under-report) and TOUCH PAD (drag on the
+  pad to aim, tap THROW — no gyroscope or motion permission needed; also
+  offered from the motion-permission screen as an escape hatch, and a hint
+  appears automatically when no sensor data arrives at all).
+
+Round 9 fixes (review pass — reconnect + control flow):
+
+- Reconnect actually works now: signaling docs carry a negotiation
+  "generation". When the host receives a DIFFERENT answer for a session it
+  already negotiated (phone reloaded/reconnected with the same QR or code),
+  it tears down the dead peer and publishes a FRESH offer (gen+1) on the same
+  doc — same code/QR, same slot. The phone stays subscribed to the doc and
+  renegotiates on the generation bump. The stored uid alone passed the claim
+  check but the new answer was ignored before — "worked before, now stuck
+  on connecting".
+- The whole connect attempt is bounded (30s overall, 20s channel-open
+  watchdog): Firestore lookups/claims can no longer leave CONNECT disabled
+  forever; late completions after cancellation are dropped (_aborted guard),
+  close() settles pending waiters, and CONNECT retries reuse the QR token
+  (QR users never typed a code). Code lookup now also accepts sessions this
+  device already owns, so retry-by-code works after a failed attempt.
+- TOUCH PAD flow is self-contained: THROW is visible whenever the throw is a
+  button (pad = always), sensor-driven swings are disabled in pad mode, and
+  scheme changes reset the aim/swing/twist state (no stale lock bleeding
+  into the pad pose). The pad drag surface sets touch-action: none.
+- Aim gate: the stance check now uses the RAW extracted angles (mapped
+  steer is zeroed in swing/flick, so it could never gate) and an ADAPTIVE
+  stillness threshold (EMA of the calm noise floor — a noisy accelerometer
+  can no longer lock the controls permanently). The auto re-aim requires a
+  still, in-stance, deliberately different pose held ~0.5s — carrying the
+  phone (out of range / not still) still can't re-aim.
+- Sensor control is suspended while the SETUP or motion-permission screen
+  is up — a swing can't throw while you're in the menus. Permission-denial
+  errors now show on the motion screen itself (motion-err), and the
+  no-sensor hint only counts motion events with usable readings.
+- Saved control settings are preserved (only absent/invalid saved settings
+  fall back to the new SWING + LOW defaults).
